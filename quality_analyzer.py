@@ -9,7 +9,7 @@ from typing import Dict, List
 class QualityAnalyzer:
     """Analyze extraction quality across all judgments"""
     
-    def __init__(self, db_path: str = "extracted_data/database.db"):
+    def __init__(self, db_path: str = "extracted_data/legal_library.db"):
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
     
