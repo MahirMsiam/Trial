@@ -2,3 +2,12 @@ ad_judgments/
 sc_judgments/
 logs/
 extracted_data/
+
+# RAG System files
+.env
+faiss_index.bin
+chunks_map.json
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
