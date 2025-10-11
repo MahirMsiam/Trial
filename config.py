@@ -39,6 +39,12 @@ SESSION_TIMEOUT = int(os.getenv('SESSION_TIMEOUT', '3600'))  # seconds before se
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 LOG_FILE = os.getenv('LOG_FILE', 'logs/rag_system.log')
 
+# --- API Configuration ---
+API_HOST = os.getenv('API_HOST', '0.0.0.0')
+API_PORT = int(os.getenv('API_PORT', '8000'))
+API_WORKERS = int(os.getenv('API_WORKERS', '4'))
+CORS_ORIGINS = os.getenv('CORS_ORIGINS', '*').split(',')  # Split comma-separated list
+
 # --- Import Crime Keywords ---
 try:
     from crime_keywords import CRIME_KEYWORDS
@@ -90,6 +96,13 @@ def validate_config():
     
     if not os.path.exists(CHUNKS_MAP_PATH):
         errors.append(f"Chunks map not found at {CHUNKS_MAP_PATH} (degraded mode available)")
+    
+    # API configuration validation (warnings only)
+    if API_PORT < 1 or API_PORT > 65535:
+        errors.append(f"API_PORT must be between 1 and 65535, got {API_PORT}")
+    
+    if API_WORKERS < 1 or API_WORKERS > 16:
+        errors.append(f"API_WORKERS should be between 1 and 16, got {API_WORKERS} (warning)")
     
     return errors
 
