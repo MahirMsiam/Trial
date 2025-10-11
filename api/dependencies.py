@@ -10,6 +10,7 @@ from config import DATABASE_PATH
 # Module-level variables for singleton instances
 _rag_pipeline = None
 _initialization_error = None
+_retriever = None
 
 
 def get_rag_pipeline():
@@ -36,6 +37,24 @@ def get_rag_pipeline():
             raise HTTPException(status_code=503, detail=f"RAG system not initialized: {str(e)}")
     
     return _rag_pipeline
+
+
+def get_retriever():
+    """
+    Dependency function that returns a singleton instance of HybridRetriever.
+    Provides lightweight FAISS-only retrieval without requiring the full RAG pipeline.
+    """
+    global _retriever
+    if _retriever is None:
+        try:
+            logger.info("Initializing HybridRetriever singleton...")
+            from rag_retriever import HybridRetriever
+            _retriever = HybridRetriever()
+            logger.info("HybridRetriever initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize HybridRetriever: {e}", exc_info=True)
+            raise HTTPException(status_code=503, detail=f"Retriever not initialized: {str(e)}")
+    return _retriever
 
 
 def get_judgment_search():
