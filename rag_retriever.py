@@ -136,7 +136,7 @@ class HybridRetriever:
         
         Args:
             query: Search query string
-            filters: Optional filters (case_type, year, etc.)
+            filters: Optional filters (case_type, year, petitioner, respondent, advocate, section, rule_outcome, etc.)
             
         Returns:
             List of matching judgments with metadata
@@ -147,32 +147,65 @@ class HybridRetriever:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
-                # Build SQL query
-                sql = "SELECT id, case_number, case_type, judgment_date, petitioner_name, respondent_name, full_text FROM judgments WHERE 1=1"
+                # Build SQL query with JOINs for advocate and section filtering
+                sql = "SELECT DISTINCT j.id, j.case_number, j.case_type, j.judgment_date, j.petitioner_name, j.respondent_name, j.full_text FROM judgments j"
+                joins = []
+                conditions = []
                 params = []
                 
-                # Add text search
+                # Handle advocate search (JOIN advocates table)
+                if filters and filters.get('advocate'):
+                    joins.append("JOIN advocates a ON j.id = a.judgment_id")
+                    conditions.append("a.advocate_name LIKE ?")
+                    params.append(f"%{filters['advocate']}%")
+                
+                # Handle law/section search (JOIN laws table)
+                if filters and filters.get('section'):
+                    joins.append("JOIN laws l ON j.id = l.judgment_id")
+                    conditions.append("l.law_text LIKE ?")
+                    params.append(f"%{filters['section']}%")
+                
+                # Add joins to query
+                if joins:
+                    sql += " " + " ".join(joins)
+                
+                # Add WHERE clause start
+                sql += " WHERE 1=1"
+                
+                # Add text search on full_text
                 if query:
-                    sql += " AND full_text LIKE ?"
+                    conditions.append("j.full_text LIKE ?")
                     params.append(f"%{query}%")
                 
-                # Apply filters
+                # Apply additional filters
                 if filters:
                     if 'case_type' in filters:
-                        sql += " AND case_type LIKE ?"
+                        conditions.append("j.case_type LIKE ?")
                         params.append(f"%{filters['case_type']}%")
                     
+                    if 'case_number' in filters:
+                        conditions.append("j.case_number = ?")
+                        params.append(filters['case_number'])
+                    
                     if 'year' in filters:
-                        sql += " AND judgment_date LIKE ?"
-                        params.append(f"%{filters['year']}%")
+                        conditions.append("(j.case_year = ? OR j.judgment_date LIKE ?)")
+                        params.extend([filters['year'], f"%{filters['year']}%"])
                     
                     if 'petitioner' in filters:
-                        sql += " AND petitioner_name LIKE ?"
+                        conditions.append("j.petitioner_name LIKE ?")
                         params.append(f"%{filters['petitioner']}%")
                     
                     if 'respondent' in filters:
-                        sql += " AND respondent_name LIKE ?"
+                        conditions.append("j.respondent_name LIKE ?")
                         params.append(f"%{filters['respondent']}%")
+                    
+                    if 'rule_outcome' in filters:
+                        conditions.append("j.rule_outcome LIKE ?")
+                        params.append(f"%{filters['rule_outcome']}%")
+                
+                # Add all conditions
+                if conditions:
+                    sql += " AND " + " AND ".join(conditions)
                 
                 sql += f" LIMIT {TOP_K_SQL_RESULTS}"
                 
