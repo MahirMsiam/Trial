@@ -29,10 +29,13 @@ app = FastAPI(
 # WARNING: Using allow_origins=["*"] is permissive and suitable for development only.
 # In production, restrict this to specific frontend domains for security.
 # Example: Set CORS_ORIGINS in .env to "https://yourdomain.com,https://app.yourdomain.com"
+allow_origins = [o.strip() for o in CORS_ORIGINS]
+allow_credentials = not (len(allow_origins) == 1 and allow_origins[0] == "*")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ORIGINS,  # from config (environment-driven)
-    allow_credentials=True,
+    allow_origins=allow_origins,
+    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
