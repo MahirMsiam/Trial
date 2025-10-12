@@ -74,8 +74,8 @@ async def get_session(session_id: str = Depends(verify_session), pipeline=Depend
 
 @router.get("/{session_id}/history")
 async def get_session_history(
-    session_id: str, 
-    max_turns: int = None, 
+    session_id: str = Depends(verify_session),
+    max_turns: int = None,
     pipeline=Depends(get_rag_pipeline)
 ) -> List[Dict[str, Any]]:
     """
@@ -86,21 +86,14 @@ async def get_session_history(
         logger.info(f"Getting session history: {session_id}, max_turns={max_turns}")
         
         conv_manager = pipeline.conversation_manager
-        
-        # Get conversation context
+
+        # Verify dependency already ensured session exists; just fetch history
         history = conv_manager.get_context_for_prompt(session_id=session_id, max_turns=max_turns)
-        
-        if history is None:
-            logger.warning(f"Session not found: {session_id}")
-            raise HTTPException(status_code=404, detail="Session not found or expired")
         
         logger.info(f"Retrieved {len(history)} messages for session {session_id}")
         return history
     except HTTPException:
         raise
-    except ValueError as e:
-        logger.warning(f"Session not found: {session_id} - {e}")
-        raise HTTPException(status_code=404, detail="Session not found or expired")
     except Exception as e:
         logger.error(f"Failed to get session history for {session_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to retrieve session history: {str(e)}")
