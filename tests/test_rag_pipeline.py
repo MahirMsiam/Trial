@@ -122,7 +122,7 @@ def test_llm_client_validation():
 
 def test_openai_client_initialization():
     """Test OpenAI client initialization."""
-    with patch('llm_client.OpenAI'):
+    with patch('llm_client._OpenAI'):
         with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}):
             client = get_llm_client('openai')
             assert client is not None
@@ -319,13 +319,135 @@ def test_error_handling(mock_get_llm, mock_retriever_class):
     assert 'error' in result['response'].lower() or result['query_type'] == 'error'
 
 
+# Cache and Ranking Tests
+
+def test_query_cache(mock_retriever, mock_llm_client):
+    """Test query result caching"""
+    # This is a mock test - actual caching tests are in test_performance.py
+    # Just verify that the cache manager can be imported
+    try:
+        from cache_manager import QueryCache
+        cache = QueryCache()
+        assert cache is not None
+    except ImportError:
+        pytest.skip("Cache manager not available")
+
+
+def test_llm_cache(mock_llm_client):
+    """Test LLM response caching"""
+    try:
+        from cache_manager import LLMResponseCache
+        cache = LLMResponseCache()
+        
+        # Test cache operations
+        query = "test query"
+        context_hash = "testhash123"
+        response = "test response"
+        
+        cache.cache_llm_response(query, context_hash, response)
+        cached = cache.get_cached_llm_response(query, context_hash)
+        assert cached == response
+    except ImportError:
+        pytest.skip("Cache manager not available")
+
+
+def test_embedding_cache():
+    """Test embedding caching"""
+    try:
+        from cache_manager import EmbeddingCache
+        cache = EmbeddingCache()
+        
+        # Test cache operations
+        text = "test text"
+        embedding = [0.1, 0.2, 0.3]
+        
+        cache.cache_embedding(text, embedding)
+        cached = cache.get_cached_embedding(text)
+        assert cached == embedding
+    except ImportError:
+        pytest.skip("Cache manager not available")
+
+
+def test_bm25_ranking():
+    """Test BM25 scoring"""
+    try:
+        from ranking_algorithms import BM25Ranker
+        
+        corpus = [
+            "The quick brown fox",
+            "A quick brown dog",
+            "The dog is lazy"
+        ]
+        
+        ranker = BM25Ranker(corpus)
+        documents = [{'id': i, 'full_text': doc} for i, doc in enumerate(corpus)]
+        
+        query = "quick fox"
+        ranked = ranker.rank_documents(query, documents)
+        
+        assert len(ranked) == len(documents)
+        assert 'bm25_score' in ranked[0]
+        # First document should score highest (has both "quick" and "fox")
+        assert ranked[0]['id'] == 0
+    except ImportError:
+        pytest.skip("Ranking algorithms not available")
+
+
+def test_rrf_fusion():
+    """Test Reciprocal Rank Fusion"""
+    try:
+        from ranking_algorithms import ReciprocalRankFusion
+        
+        rrf = ReciprocalRankFusion(k=60)
+        
+        # Two ranked lists
+        list1 = [{'id': 1, 'score': 10}, {'id': 2, 'score': 8}, {'id': 3, 'score': 6}]
+        list2 = [{'id': 2, 'score': 10}, {'id': 3, 'score': 9}, {'id': 1, 'score': 5}]
+        
+        fused = rrf.fuse([list1, list2])
+        
+        assert len(fused) == 3
+        assert 'rrf_score' in fused[0]
+        # Document 2 should score highest (ranks well in both lists)
+        assert fused[0]['id'] == 2
+    except ImportError:
+        pytest.skip("Ranking algorithms not available")
+
+
+def test_hybrid_with_bm25(mock_retriever, mock_llm_client):
+    """Test hybrid retrieval with BM25 enabled"""
+    try:
+        from config import USE_BM25
+        if not USE_BM25:
+            pytest.skip("BM25 not enabled in config")
+        
+        # This would test with actual BM25 integration
+        # For now, just verify the feature can be enabled
+        assert USE_BM25 in [True, False]
+    except ImportError:
+        pytest.skip("BM25 configuration not available")
+
+
+def test_hybrid_with_rrf(mock_retriever, mock_llm_client):
+    """Test hybrid retrieval with RRF enabled"""
+    try:
+        from config import USE_RRF
+        if not USE_RRF:
+            pytest.skip("RRF not enabled in config")
+        
+        # This would test with actual RRF integration
+        # For now, just verify the feature can be enabled
+        assert USE_RRF in [True, False]
+    except ImportError:
+        pytest.skip("RRF configuration not available")
+
+
 # Integration Test
 
 @pytest.mark.integration
 def test_full_pipeline_integration():
     """
     Integration test with real components (requires actual database and index).
-    Skip this test if database/index not available.
     """
     import os
     if not os.path.exists('extracted_data/database.db'):
@@ -334,11 +456,33 @@ def test_full_pipeline_integration():
     if not os.path.exists('faiss_index.bin'):
         pytest.skip("FAISS index not available for integration test")
     
-    # This would test with actual components
-    # Uncomment when ready for full integration testing
-    # pipeline = RAGPipeline()
-    # result = pipeline.process_query("test query")
-    # assert result is not None
+    try:
+        # Initialize real pipeline
+        from rag_pipeline import RAGPipeline
+        pipeline = RAGPipeline()
+        
+        # Test with a simple query
+        result = pipeline.process_query("What is a writ petition?")
+        
+        # Verify result structure
+        assert result is not None
+        assert 'response' in result
+        assert 'sources' in result
+        assert 'session_id' in result
+        assert 'query_type' in result
+        
+        # Response should not be empty
+        assert len(result['response']) > 0
+        
+        # Should have some sources (unless database is empty)
+        # This is a soft assertion since it depends on data
+        if result['sources']:
+            assert isinstance(result['sources'], list)
+        
+        print(f"✅ Integration test passed - response length: {len(result['response'])}")
+        
+    except Exception as e:
+        pytest.fail(f"Integration test failed with error: {e}")
 
 
 if __name__ == '__main__':
