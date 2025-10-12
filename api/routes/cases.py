@@ -32,10 +32,7 @@ async def summarize_case(case_id: int, pipeline=Depends(get_rag_pipeline)):
             raise HTTPException(status_code=404, detail=f"Case with ID {case_id} not found")
         
         # Convert to response format
-        response = CaseSummaryResponse(
-            summary=result["summary"],
-            case_data=JudgmentResponse(**result["case_data"])
-        )
+        response = CaseSummaryResponse(**result)
         
         logger.info(f"Case summary generated for case_id={case_id}")
         return response
@@ -67,14 +64,9 @@ async def compare_cases(request: CompareCasesRequest, pipeline=Depends(get_rag_p
             raise HTTPException(status_code=400, detail="Need at least 2 valid cases to compare")
         
         # Convert cases to response format
-        cases = [JudgmentResponse(**case) for case in result["cases"]]
+        response = CaseComparisonResponse(**result)
         
-        response = CaseComparisonResponse(
-            comparison=result["comparison"],
-            cases=cases
-        )
-        
-        logger.info(f"Case comparison completed for {len(cases)} cases")
+        logger.info(f"Case comparison completed for {len(response.cases)} cases")
         return response
     except HTTPException:
         raise
