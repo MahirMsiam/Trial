@@ -14,12 +14,15 @@ EMBEDDING_MODEL = 'all-MiniLM-L6-v2'  # sentence-transformers model
 EMBEDDING_DIMENSION = 384  # dimension for all-MiniLM-L6-v2
 
 # --- LLM Configuration ---
-LLM_PROVIDER = os.getenv('LLM_PROVIDER', 'openai')  # options: 'openai', 'anthropic', 'local'
+LLM_PROVIDER = os.getenv('LLM_PROVIDER', 'openai')  # options: 'openai', 'anthropic', 'gemini', 'local', 'fake'
+USE_FAKE_LLM_FOR_TESTS = os.getenv('USE_FAKE_LLM_FOR_TESTS', 'false').lower() == 'true'
 LLM_MODEL = os.getenv('LLM_MODEL', 'gpt-4-turbo-preview')  # or 'claude-3-sonnet-20240229'
 LLM_TEMPERATURE = float(os.getenv('LLM_TEMPERATURE', '0.3'))  # lower for factual legal responses
 LLM_MAX_TOKENS = int(os.getenv('LLM_MAX_TOKENS', '2000'))
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-1.5-pro')
 LOCAL_LLM_ENDPOINT = os.getenv('LOCAL_LLM_ENDPOINT', 'http://localhost:8000')
 LOCAL_LLM_MODEL = os.getenv('LOCAL_LLM_MODEL', 'llama-2-7b-chat')
 
@@ -44,6 +47,31 @@ API_HOST = os.getenv('API_HOST', '0.0.0.0')
 API_PORT = int(os.getenv('API_PORT', '8000'))
 API_WORKERS = int(os.getenv('API_WORKERS', '4'))
 CORS_ORIGINS = os.getenv('CORS_ORIGINS', '*').split(',')  # Split comma-separated list
+
+# --- Caching Configuration ---
+# Cache version - increment when config changes affect cached results (model, thresholds, etc.)
+CACHE_VERSION = os.getenv('CACHE_VERSION', 'v1')
+CACHE_ENABLED = os.getenv('CACHE_ENABLED', 'false').lower() == 'true'
+CACHE_BACKEND = os.getenv('CACHE_BACKEND', 'memory')  # 'memory' or 'redis'
+CACHE_TTL_QUERY = int(os.getenv('CACHE_TTL_QUERY', '3600'))  # 1 hour
+CACHE_TTL_LLM = int(os.getenv('CACHE_TTL_LLM', '7200'))  # 2 hours
+CACHE_TTL_EMBEDDING = int(os.getenv('CACHE_TTL_EMBEDDING', '86400'))  # 24 hours
+REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+
+# --- Advanced Ranking Configuration ---
+USE_BM25 = os.getenv('USE_BM25', 'false').lower() == 'true'
+USE_RRF = os.getenv('USE_RRF', 'false').lower() == 'true'
+BM25_K1 = float(os.getenv('BM25_K1', '1.5'))  # Term frequency saturation
+BM25_B = float(os.getenv('BM25_B', '0.75'))  # Length normalization
+BM25_CORPUS_LIMIT = int(os.getenv('BM25_CORPUS_LIMIT', '1000'))  # Max documents for BM25 corpus
+RRF_K = int(os.getenv('RRF_K', '60'))  # RRF constant
+
+# --- Performance Monitoring ---
+ENABLE_METRICS = os.getenv('ENABLE_METRICS', 'false').lower() == 'true'
+METRICS_PORT = int(os.getenv('METRICS_PORT', '9090'))
+
+# --- Database Optimization ---
+USE_CONNECTION_POOL = os.getenv('USE_CONNECTION_POOL', 'false').lower() == 'true'
 
 # --- Import Crime Keywords ---
 try:
@@ -76,41 +104,73 @@ def validate_config():
     """
     Validate that required configuration is present.
     
-    Returns warnings for missing FAISS index (allows degraded mode)
-    but errors for critical issues like missing LLM keys or database.
+    Returns tuple of (errors, warnings) where:
+    - errors: Critical issues that prevent operation
+    - warnings: Non-critical issues or informational messages
     """
     errors = []
+    warnings = []
     
+    # Critical: LLM API keys
     if LLM_PROVIDER == 'openai' and not OPENAI_API_KEY:
         errors.append("OPENAI_API_KEY is required when LLM_PROVIDER is 'openai'")
     
     if LLM_PROVIDER == 'anthropic' and not ANTHROPIC_API_KEY:
         errors.append("ANTHROPIC_API_KEY is required when LLM_PROVIDER is 'anthropic'")
     
+    if LLM_PROVIDER == 'gemini' and not GEMINI_API_KEY:
+        errors.append("GEMINI_API_KEY is required when LLM_PROVIDER is 'gemini'")
+    
+    # Critical: Database
     if not os.path.exists(DATABASE_PATH):
         errors.append(f"Database not found at {DATABASE_PATH}")
     
-    # Soft warnings for FAISS (allows degraded mode with keyword-only search)
+    # Critical: Cache backend validation
+    if CACHE_BACKEND not in ['memory', 'redis']:
+        errors.append(f"CACHE_BACKEND must be 'memory' or 'redis', got '{CACHE_BACKEND}'")
+    
+    if CACHE_BACKEND == 'redis' and not REDIS_URL:
+        errors.append("REDIS_URL required when CACHE_BACKEND is 'redis'")
+    
+    # Warning: Advanced ranking (experimental features)
+    if USE_BM25:
+        warnings.append("BM25 ranking enabled (experimental feature)")
+    
+    if USE_RRF:
+        warnings.append("RRF fusion enabled (experimental feature)")
+    
+    # Warning: FAISS (allows degraded mode with keyword-only search)
     if not os.path.exists(FAISS_INDEX_PATH):
-        errors.append(f"FAISS index not found at {FAISS_INDEX_PATH} (degraded mode available)")
+        warnings.append(f"FAISS index not found at {FAISS_INDEX_PATH} - semantic search disabled (degraded mode)")
     
     if not os.path.exists(CHUNKS_MAP_PATH):
-        errors.append(f"Chunks map not found at {CHUNKS_MAP_PATH} (degraded mode available)")
+        warnings.append(f"Chunks map not found at {CHUNKS_MAP_PATH} - semantic search disabled (degraded mode)")
     
-    # API configuration validation (warnings only)
+    # Warning: API configuration validation
     if API_PORT < 1 or API_PORT > 65535:
-        errors.append(f"API_PORT must be between 1 and 65535, got {API_PORT}")
+        warnings.append(f"API_PORT must be between 1 and 65535, got {API_PORT}")
     
     if API_WORKERS < 1 or API_WORKERS > 16:
-        errors.append(f"API_WORKERS should be between 1 and 16, got {API_WORKERS} (warning)")
+        warnings.append(f"API_WORKERS should be between 1 and 16, got {API_WORKERS}")
     
-    return errors
+    return errors, warnings
 
 if __name__ == '__main__':
-    errors = validate_config()
+    errors, warnings = validate_config()
+    
     if errors:
-        print("❌ Configuration Errors:")
+        print("❌ Configuration Errors (Critical):")
         for error in errors:
             print(f"  - {error}")
-    else:
+    
+    if warnings:
+        print("\n⚠️  Configuration Warnings:")
+        for warning in warnings:
+            print(f"  - {warning}")
+    
+    if not errors and not warnings:
         print("✅ Configuration validated successfully")
+    elif not errors:
+        print("\n✅ Configuration OK (with warnings)")
+    else:
+        print("\n❌ Configuration has critical errors")
