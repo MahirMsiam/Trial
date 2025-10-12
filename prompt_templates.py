@@ -97,7 +97,7 @@ def build_crime_category_prompt(query: str, crime_type: str, cases: List[Dict]) 
     prompt_parts = []
     
     prompt_parts.append(f"=== CRIME CATEGORY SEARCH: {crime_type.upper()} ===")
-    prompt_parts.append(f"Query: {query}")
+    prompt_parts.append(f"QUERY: {query.upper()}")
     prompt_parts.append(f"Found {len(cases)} cases related to {crime_type}\n")
     
     prompt_parts.append("=== CASE LIST ===")
