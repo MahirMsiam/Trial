@@ -5,6 +5,7 @@ Chat and RAG-related API endpoints.
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 import json
+from anyio import to_thread
 from logging_config import logger
 from api.dependencies import get_rag_pipeline
 from api.models import (
@@ -77,12 +78,20 @@ async def chat_stream(request: ChatRequest, pipeline=Depends(get_rag_pipeline)):
         try:
             logger.info(f"Streaming chat request: query='{request.query[:100]}...', session_id={request.session_id}")
             
-            # Stream query through RAG pipeline
-            for chunk in pipeline.process_query_stream(
-                query=request.query,
-                session_id=request.session_id,
-                filters=request.filters
-            ):
+            # Create a synchronous generator function
+            def sync_stream():
+                for chunk in pipeline.process_query_stream(
+                    query=request.query,
+                    session_id=request.session_id,
+                    filters=request.filters
+                ):
+                    yield chunk
+            
+            # Run synchronous streaming in a thread pool to avoid blocking event loop
+            chunks = await to_thread.run_sync(lambda: list(sync_stream()))
+            
+            # Process and yield chunks
+            for chunk in chunks:
                 chunk_type = chunk.get('type')
                 chunk_content = chunk.get('content')
                 
