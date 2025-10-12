@@ -5,7 +5,7 @@ Search-related API endpoints.
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List
 from logging_config import logger
-from api.dependencies import get_rag_pipeline, get_judgment_search
+from api.dependencies import get_rag_pipeline, get_judgment_search, get_retriever
 from api.models import (
     KeywordSearchRequest, SemanticSearchRequest, HybridSearchRequest, CrimeSearchRequest,
     SearchResultResponse, ChunkResponse, CrimeSearchResponse, JudgmentResponse, ErrorResponse, CaseResult
@@ -88,7 +88,7 @@ async def keyword_search(request: KeywordSearchRequest, searcher=Depends(get_jud
 
 
 @router.post("/semantic", response_model=List[ChunkResponse])
-async def semantic_search(request: SemanticSearchRequest, pipeline=Depends(get_rag_pipeline)):
+async def semantic_search(request: SemanticSearchRequest, retriever=Depends(get_retriever)):
     """
     FAISS semantic search using sentence embeddings.
     Returns relevant text chunks with similarity scores.
@@ -96,14 +96,12 @@ async def semantic_search(request: SemanticSearchRequest, pipeline=Depends(get_r
     try:
         logger.info(f"Semantic search request: query='{request.query}', top_k={request.top_k}")
         
-        retriever = pipeline.retriever
-        
         # Check if FAISS index is available
         if getattr(retriever, 'index', None) is None or not getattr(retriever, 'chunks_map', {}):
             logger.warning("FAISS index not available for semantic search")
             raise HTTPException(
                 status_code=503, 
-                detail="Semantic search unavailable. Please run create_index.py to build the FAISS index."
+                detail="Semantic search unavailable. Run create_index.py"
             )
         
         # Perform semantic search
@@ -122,15 +120,13 @@ async def semantic_search(request: SemanticSearchRequest, pipeline=Depends(get_r
 
 
 @router.post("/hybrid", response_model=List[CaseResult])
-async def hybrid_search(request: HybridSearchRequest, pipeline=Depends(get_rag_pipeline)):
+async def hybrid_search(request: HybridSearchRequest, retriever=Depends(get_retriever)):
     """
     Hybrid semantic + keyword search combining FAISS and SQL.
     Returns case-level results with nested chunks from both retrieval methods.
     """
     try:
         logger.info(f"Hybrid search request: query='{request.query}', top_k={request.top_k}")
-        
-        retriever = pipeline.retriever
         
         # Perform hybrid search
         results = retriever.hybrid_retrieve(
