@@ -1,11 +1,20 @@
 from typing import Dict, List, Optional, Iterator
+import hashlib
+import json
 from rag_retriever import HybridRetriever
 from llm_client import get_llm_client, LLMClient, validate_response
 from conversation_manager import ConversationManager
 import prompt_templates
-from config import CRIME_KEYWORDS
+from config import CRIME_KEYWORDS, CACHE_ENABLED, CACHE_TTL_LLM
 import logging_config  # noqa: F401
 import logging
+
+# Import caching
+try:
+    from cache_manager import LLMResponseCache
+    CACHING_AVAILABLE = True
+except ImportError:
+    CACHING_AVAILABLE = False
 
 # Get logger
 logger = logging.getLogger(__name__)
@@ -22,6 +31,17 @@ class RAGPipeline:
         self.retriever = HybridRetriever()
         self.llm_client = get_llm_client()
         self.conversation_manager = ConversationManager()
+        
+        # Initialize LLM cache
+        self.llm_cache = None
+        if CACHE_ENABLED and CACHING_AVAILABLE:
+            try:
+                self.llm_cache = LLMResponseCache()
+                logger.info("✅ LLM response caching enabled")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to initialize LLM cache: {e}")
+        else:
+            logger.info("ℹ️  LLM response caching disabled")
         
         logger.info("✅ RAG Pipeline initialized successfully")
     
@@ -148,6 +168,34 @@ class RAGPipeline:
             # Get system prompt
             system_prompt = prompt_templates.get_system_prompt()
             
+            # Generate context hash for caching
+            context_hash = None
+            if self.llm_cache:
+                try:
+                    # Create hash from top chunk texts (first 200 chars each)
+                    context_texts = [c.get('chunks', [{}])[0].get('chunk_text', '')[:200] if 'chunks' in c 
+                                    else c.get('chunk_text', '')[:200] for c in contexts]
+                    context_str = json.dumps(context_texts, sort_keys=True)
+                    context_hash = hashlib.md5(context_str.encode()).hexdigest()
+                    
+                    # Check cache
+                    cached_response = self.llm_cache.get_cached_llm_response(query, context_hash)
+                    if cached_response:
+                        logger.info("✅ Cache hit for LLM response")
+                        # Still update conversation history
+                        self.conversation_manager.add_message(session_id, "user", query)
+                        self.conversation_manager.add_message(session_id, "assistant", cached_response)
+                        
+                        return {
+                            "response": cached_response,
+                            "sources": contexts,
+                            "query_type": query_type,
+                            "session_id": session_id,
+                            "cached": True
+                        }
+                except Exception as e:
+                    logger.warning(f"Cache check failed: {e}")
+            
             # Generate response
             logger.info("Generating LLM response...")
             response = self.llm_client.generate(user_prompt, system_prompt)
@@ -160,6 +208,13 @@ class RAGPipeline:
             # Format response with citations
             formatted_response = prompt_templates.format_response_with_citations(response, contexts)
             
+            # Cache the response
+            if self.llm_cache and context_hash:
+                try:
+                    self.llm_cache.cache_llm_response(query, context_hash, formatted_response, ttl=CACHE_TTL_LLM)
+                except Exception as e:
+                    logger.warning(f"Failed to cache LLM response: {e}")
+            
             # Update conversation history with formatted response
             self.conversation_manager.add_message(session_id, "user", query)
             self.conversation_manager.add_message(session_id, "assistant", formatted_response)
@@ -168,7 +223,8 @@ class RAGPipeline:
                 "response": formatted_response,
                 "sources": contexts,
                 "query_type": query_type,
-                "session_id": session_id
+                "session_id": session_id,
+                "cached": False
             }
             
         except Exception as e:
@@ -368,6 +424,43 @@ class RAGPipeline:
             "summary": summary,
             "case_data": case_data
         }
+    
+    def get_cache_stats(self) -> Dict:
+        """
+        Return statistics from all caches
+        
+        Returns:
+            Dict with cache statistics
+        """
+        stats = {}
+        
+        # Get query cache stats from retriever
+        if hasattr(self.retriever, 'query_cache') and self.retriever.query_cache:
+            stats['query_cache'] = self.retriever.query_cache.get_stats()
+        
+        # Get embedding cache stats from retriever
+        if hasattr(self.retriever, 'embedding_cache') and self.retriever.embedding_cache:
+            stats['embedding_cache'] = self.retriever.embedding_cache.get_stats()
+        
+        # Get LLM cache stats
+        if self.llm_cache:
+            stats['llm_cache'] = self.llm_cache.get_stats()
+        
+        return stats
+    
+    def clear_caches(self):
+        """Clear all caches"""
+        # Clear retriever caches
+        if hasattr(self.retriever, 'invalidate_cache'):
+            self.retriever.invalidate_cache()
+        
+        # Clear LLM cache
+        if self.llm_cache:
+            try:
+                self.llm_cache.invalidate('*')
+                logger.info("✅ LLM cache cleared")
+            except Exception as e:
+                logger.error(f"Failed to clear LLM cache: {e}")
 
 
 if __name__ == '__main__':
