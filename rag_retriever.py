@@ -8,13 +8,42 @@ from typing import List, Dict, Optional
 from config import (
     DATABASE_PATH, FAISS_INDEX_PATH, CHUNKS_MAP_PATH,
     EMBEDDING_MODEL, TOP_K_CHUNKS, TOP_K_SQL_RESULTS,
-    SIMILARITY_THRESHOLD, CRIME_KEYWORDS
+    SIMILARITY_THRESHOLD, CRIME_KEYWORDS,
+    CACHE_ENABLED, USE_BM25, USE_RRF, BM25_K1, BM25_B, RRF_K,
+    HYBRID_WEIGHT_SEMANTIC, HYBRID_WEIGHT_KEYWORD, USE_CONNECTION_POOL,
+    CACHE_VERSION
 )
 import logging_config  # noqa: F401
 import logging
 
-# Get logger
+# Initialize logger first before any usage
 logger = logging.getLogger(__name__)
+
+# Import caching and ranking modules
+try:
+    from cache_manager import QueryCache, EmbeddingCache
+    from ranking_algorithms import BM25Ranker, ReciprocalRankFusion
+    CACHING_AVAILABLE = True
+    RANKING_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Optional modules not available: {e}")
+    CACHING_AVAILABLE = False
+    RANKING_AVAILABLE = False
+
+# Module-level connection pool
+_connection_pool = None
+
+def get_connection_pool():
+    """Get or create module-level connection pool"""
+    global _connection_pool
+    if _connection_pool is None and USE_CONNECTION_POOL:
+        try:
+            from database_optimizer import ConnectionPool
+            _connection_pool = ConnectionPool(DATABASE_PATH, pool_size=5)
+            logger.info("✅ Connection pool initialized (size=5)")
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to initialize connection pool: {e}")
+    return _connection_pool
 
 
 class HybridRetriever:
@@ -24,6 +53,9 @@ class HybridRetriever:
         """Initialize the hybrid retriever with FAISS index, embeddings model, and database."""
         logger.info("Initializing HybridRetriever...")
         
+        # Initialize connection pool if enabled
+        self.connection_pool = get_connection_pool() if USE_CONNECTION_POOL else None
+        
         # Load sentence transformer model
         try:
             self.model = SentenceTransformer(EMBEDDING_MODEL)
@@ -31,6 +63,33 @@ class HybridRetriever:
         except Exception as e:
             logger.error(f"❌ Failed to load embedding model: {e}")
             raise
+        
+        # Initialize caching if enabled and available
+        self.query_cache = None
+        self.embedding_cache = None
+        if CACHE_ENABLED and CACHING_AVAILABLE:
+            try:
+                self.query_cache = QueryCache()
+                self.embedding_cache = EmbeddingCache()
+                logger.info("✅ Caching enabled (query and embedding caches initialized)")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to initialize caching: {e}")
+        else:
+            logger.info("ℹ️  Caching disabled")
+        
+        # Initialize BM25 ranker if enabled
+        self.bm25_ranker = None
+        if USE_BM25 and RANKING_AVAILABLE:
+            self._initialize_bm25()
+        
+        # Initialize RRF if enabled
+        self.rrf = None
+        if USE_RRF and RANKING_AVAILABLE:
+            try:
+                self.rrf = ReciprocalRankFusion(k=RRF_K)
+                logger.info(f"✅ RRF initialized (k={RRF_K})")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to initialize RRF: {e}")
         
         # Load FAISS index - allow degraded mode if missing
         try:
@@ -60,8 +119,80 @@ class HybridRetriever:
             raise
     
     def _get_db_connection(self):
-        """Get a new database connection."""
-        return sqlite3.connect(self.db_path)
+        """
+        Get a database connection or use pool if available.
+        
+        Returns:
+            Context manager that yields (cursor, connection) tuple.
+            When using pool, connection is None as it's managed by pool.
+        """
+        from contextlib import contextmanager
+        
+        @contextmanager
+        def _connection_context():
+            if self.connection_pool:
+                # Use connection pool - it handles commit/rollback/return
+                with self.connection_pool.get_cursor() as cursor:
+                    yield cursor, None
+            else:
+                # Direct connection - we manage lifecycle
+                conn = sqlite3.connect(self.db_path, check_same_thread=False)
+                try:
+                    cursor = conn.cursor()
+                    yield cursor, conn
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+                finally:
+                    conn.close()
+        
+        return _connection_context()
+
+    
+    def close(self):
+        """Close connection pool if used."""
+        if self.connection_pool:
+            try:
+                self.connection_pool.close_all()
+                logger.info("✅ Connection pool closed")
+            except Exception as e:
+                logger.warning(f"Failed to close connection pool: {e}")
+    
+    def _initialize_bm25(self):
+        """Initialize BM25 ranker with corpus from database."""
+        try:
+            from config import BM25_CORPUS_LIMIT
+            logger.info(f"Initializing BM25 ranker (corpus limit: {BM25_CORPUS_LIMIT})...")
+            
+            with self._get_db_connection() as (cursor, conn):
+                cursor.execute(f"SELECT full_text FROM judgments LIMIT {BM25_CORPUS_LIMIT}")
+                corpus = [row[0] for row in cursor.fetchall() if row[0]]
+            
+            if corpus:
+                self.bm25_ranker = BM25Ranker(corpus, k1=BM25_K1, b=BM25_B)
+                logger.info(f"✅ BM25 ranker initialized with {len(corpus)} documents")
+            else:
+                logger.warning("⚠️  No documents found for BM25 initialization")
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to initialize BM25 ranker: {e}")
+    
+    def rebuild_bm25(self):
+        """
+        Rebuild BM25 corpus from database.
+        Useful for refreshing after database updates.
+        """
+        if not USE_BM25 or not RANKING_AVAILABLE:
+            logger.warning("BM25 is not enabled or not available")
+            return False
+        
+        try:
+            logger.info("Rebuilding BM25 corpus...")
+            self._initialize_bm25()
+            return self.bm25_ranker is not None
+        except Exception as e:
+            logger.error(f"❌ Failed to rebuild BM25 corpus: {e}")
+            return False
     
     def retrieve_semantic(self, query: str, top_k: int = TOP_K_CHUNKS) -> List[Dict]:
         """
@@ -80,11 +211,42 @@ class HybridRetriever:
             logger.warning("Semantic search disabled - index or chunks_map not available")
             return []
         
+        # Check query cache (include config version, model, and threshold in key)
+        if self.query_cache:
+            try:
+                # Normalize query for consistent caching
+                normalized_query = query.lower().strip()
+                cache_key = f"semantic:{CACHE_VERSION}:{EMBEDDING_MODEL}:{SIMILARITY_THRESHOLD}:{normalized_query}:{top_k}"
+                cached_results = self.query_cache.get(cache_key)
+                if cached_results is not None:
+                    logger.info(f"✅ Cache hit for semantic search: '{query}'")
+                    return cached_results
+            except Exception as e:
+                logger.warning(f"Cache get failed: {e}")
+        
         logger.info(f"Performing semantic search for: '{query}'")
         
         try:
-            # Generate query embedding (normalized for cosine similarity)
-            query_embedding = self.model.encode([query], normalize_embeddings=True)
+            # Check embedding cache (include model in key)
+            query_embedding = None
+            if self.embedding_cache:
+                try:
+                    query_embedding = self.embedding_cache.get_cached_embedding(query)
+                    if query_embedding is not None:
+                        logger.debug("Using cached embedding")
+                        query_embedding = np.array([query_embedding], dtype='float32')
+                except Exception as e:
+                    logger.warning(f"Embedding cache get failed: {e}")
+            
+            # Generate query embedding if not cached
+            if query_embedding is None:
+                query_embedding = self.model.encode([query], normalize_embeddings=True)
+                # Cache the embedding
+                if self.embedding_cache:
+                    try:
+                        self.embedding_cache.cache_embedding(query, query_embedding[0].tolist())
+                    except Exception as e:
+                        logger.warning(f"Embedding cache set failed: {e}")
             
             # Search FAISS index - get top_k * 3 hits to allow grouping by case
             similarities, indices = self.index.search(
@@ -124,28 +286,59 @@ class HybridRetriever:
                 results.append(result)
             
             logger.info(f"✅ Semantic search returned {len(results)} chunk hits")
+            
+            # Cache results (with config version and model in key)
+            if self.query_cache:
+                try:
+                    # Normalize query for consistent caching
+                    normalized_query = query.lower().strip()
+                    cache_key = f"semantic:{CACHE_VERSION}:{EMBEDDING_MODEL}:{SIMILARITY_THRESHOLD}:{normalized_query}:{top_k}"
+                    self.query_cache.set(cache_key, results)
+                except Exception as e:
+                    logger.warning(f"Cache set failed: {e}")
+            
             return results
             
         except Exception as e:
             logger.error(f"❌ Semantic search failed: {e}")
             return []
     
-    def retrieve_keyword(self, query: str, filters: Optional[Dict] = None) -> List[Dict]:
+    def retrieve_keyword(self, query: str, filters: Optional[Dict] = None, limit: int = TOP_K_SQL_RESULTS) -> List[Dict]:
         """
         Retrieve relevant judgments using SQL keyword search.
         
         Args:
             query: Search query string
             filters: Optional filters (case_type, year, petitioner, respondent, advocate, section, rule_outcome, etc.)
+            limit: Maximum number of results to return
             
         Returns:
             List of matching judgments with metadata
         """
+        # Check query cache
+        if self.query_cache:
+            try:
+                import hashlib
+                # Normalize query for consistent caching
+                normalized_query = query.lower().strip()
+                filters_hash = hashlib.md5(json.dumps(filters or {}, sort_keys=True).encode()).hexdigest()
+                cache_key = f"keyword:{CACHE_VERSION}:{normalized_query}:{filters_hash}:{limit}"
+                cached_results = self.query_cache.get(cache_key)
+                if cached_results is not None:
+                    logger.info(f"✅ Cache hit for keyword search: '{query}'")
+                    return cached_results
+            except Exception as e:
+                logger.warning(f"Cache get failed: {e}")
+        
         logger.info(f"Performing keyword search for: '{query}'")
         
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
+            with self._get_db_connection() as (cursor, conn):
+                # Check which optional tables exist
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                existing_tables = {row[0] for row in cursor.fetchall()}
+                has_advocates = 'advocates' in existing_tables
+                has_laws = 'laws' in existing_tables
                 
                 # Build SQL query with JOINs for advocate and section filtering
                 sql = "SELECT DISTINCT j.id, j.case_number, j.case_type, j.judgment_date, j.petitioner_name, j.respondent_name, j.full_text FROM judgments j"
@@ -153,17 +346,21 @@ class HybridRetriever:
                 conditions = []
                 params = []
                 
-                # Handle advocate search (JOIN advocates table)
-                if filters and filters.get('advocate'):
+                # Handle advocate search (JOIN advocates table) - only if table exists
+                if filters and filters.get('advocate') and has_advocates:
                     joins.append("JOIN advocates a ON j.id = a.judgment_id")
                     conditions.append("a.advocate_name LIKE ?")
                     params.append(f"%{filters['advocate']}%")
+                elif filters and filters.get('advocate') and not has_advocates:
+                    logger.warning("Advocate filter requested but 'advocates' table does not exist")
                 
-                # Handle law/section search (JOIN laws table)
-                if filters and filters.get('section'):
+                # Handle law/section search (JOIN laws table) - only if table exists
+                if filters and filters.get('section') and has_laws:
                     joins.append("JOIN laws l ON j.id = l.judgment_id")
                     conditions.append("l.law_text LIKE ?")
                     params.append(f"%{filters['section']}%")
+                elif filters and filters.get('section') and not has_laws:
+                    logger.warning("Section filter requested but 'laws' table does not exist")
                 
                 # Add joins to query
                 if joins:
@@ -207,7 +404,7 @@ class HybridRetriever:
                 if conditions:
                     sql += " AND " + " AND ".join(conditions)
                 
-                sql += f" LIMIT {TOP_K_SQL_RESULTS}"
+                sql += f" LIMIT {limit}"
                 
                 cursor.execute(sql, params)
                 rows = cursor.fetchall()
@@ -222,12 +419,34 @@ class HybridRetriever:
                         "petitioner": row[4] or 'Unknown',
                         "respondent": row[5] or 'Unknown',
                         "chunk_text": row[6][:500] if row[6] else '',  # First 500 chars as preview
+                        "full_text": row[6] or '',  # Full text for BM25
                         "full_case_id": f"{row[2] or ''} {row[1] or ''}".strip(),
                         "source": "keyword"
                     }
                     results.append(result)
             
+            # Apply BM25 ranking if enabled
+            if self.bm25_ranker and results:
+                try:
+                    logger.debug("Applying BM25 ranking to keyword results")
+                    results = self.bm25_ranker.rank_documents(query, results)
+                except Exception as e:
+                    logger.warning(f"BM25 ranking failed: {e}")
+            
             logger.info(f"✅ Keyword search returned {len(results)} results")
+            
+            # Cache results
+            if self.query_cache:
+                try:
+                    import hashlib
+                    # Normalize query for consistent caching
+                    normalized_query = query.lower().strip()
+                    filters_hash = hashlib.md5(json.dumps(filters or {}, sort_keys=True).encode()).hexdigest()
+                    cache_key = f"keyword:{CACHE_VERSION}:{normalized_query}:{filters_hash}:{limit}"
+                    self.query_cache.set(cache_key, results)
+                except Exception as e:
+                    logger.warning(f"Cache set failed: {e}")
+            
             return results
             
         except Exception as e:
@@ -294,6 +513,21 @@ class HybridRetriever:
         Returns:
             Ranked list of case-level results with multiple chunks stored in 'chunks' field
         """
+        # Check query cache
+        if self.query_cache:
+            try:
+                import hashlib
+                # Normalize query for consistent caching
+                normalized_query = query.lower().strip()
+                filters_hash = hashlib.md5(json.dumps(filters or {}, sort_keys=True).encode()).hexdigest()
+                cache_key = f"hybrid:{CACHE_VERSION}:{normalized_query}:{top_k}:{filters_hash}"
+                cached_results = self.query_cache.get(cache_key)
+                if cached_results is not None:
+                    logger.info(f"✅ Cache hit for hybrid search: '{query}'")
+                    return cached_results
+            except Exception as e:
+                logger.warning(f"Cache get failed: {e}")
+        
         logger.info(f"Performing hybrid retrieval for: '{query}'")
         
         from config import HYBRID_WEIGHT_SEMANTIC, HYBRID_WEIGHT_KEYWORD
@@ -304,6 +538,68 @@ class HybridRetriever:
         # Perform both searches
         semantic_results = self.retrieve_semantic(query, top_k=top_k)
         keyword_results = self.retrieve_keyword(query, filters=filters)
+        
+        # Use RRF if enabled, otherwise use weighted average
+        if self.rrf and (semantic_results or keyword_results):
+            try:
+                logger.debug("Using RRF for result fusion")
+                # Prepare ranked lists for RRF
+                ranked_lists = []
+                weights = []
+                
+                if semantic_results:
+                    # Sort by similarity for RRF
+                    semantic_sorted = sorted(semantic_results, key=lambda x: x.get('similarity', 0), reverse=True)
+                    ranked_lists.append(semantic_sorted)
+                    weights.append(HYBRID_WEIGHT_SEMANTIC)
+                
+                if keyword_results:
+                    # Sort by BM25 score if available, otherwise keep order
+                    if keyword_results and 'bm25_score' in keyword_results[0]:
+                        keyword_sorted = sorted(keyword_results, key=lambda x: x.get('bm25_score', 0), reverse=True)
+                    else:
+                        keyword_sorted = keyword_results
+                    ranked_lists.append(keyword_sorted)
+                    weights.append(HYBRID_WEIGHT_KEYWORD)
+                
+                if crime_results:
+                    ranked_lists.append(crime_results)
+                    weights.append(0.2)  # Weight for crime results
+                
+                # Fuse with RRF
+                fused_results = self.rrf.fuse_with_weights(ranked_lists, weights, id_field='case_id')
+                
+                # Group by case and organize chunks
+                case_results = self._organize_fused_results(fused_results, top_k)
+                
+            except Exception as e:
+                logger.warning(f"RRF fusion failed, falling back to weighted average: {e}")
+                # Fall through to weighted average method
+                case_results = self._hybrid_retrieve_weighted(query, top_k, semantic_results, keyword_results, crime_results)
+        else:
+            # Use traditional weighted average
+            case_results = self._hybrid_retrieve_weighted(query, top_k, semantic_results, keyword_results, crime_results)
+        
+        logger.info(f"✅ Hybrid retrieval returned {len(case_results)} cases with {sum(r['chunk_count'] for r in case_results)} total chunks")
+        
+        # Cache results
+        if self.query_cache:
+            try:
+                import hashlib
+                # Normalize query for consistent caching
+                normalized_query = query.lower().strip()
+                filters_hash = hashlib.md5(json.dumps(filters or {}, sort_keys=True).encode()).hexdigest()
+                cache_key = f"hybrid:{CACHE_VERSION}:{normalized_query}:{top_k}:{filters_hash}"
+                self.query_cache.set(cache_key, case_results)
+            except Exception as e:
+                logger.warning(f"Cache set failed: {e}")
+        
+        return case_results
+    
+    def _hybrid_retrieve_weighted(self, query: str, top_k: int, semantic_results: List[Dict], 
+                                   keyword_results: List[Dict], crime_results: List[Dict]) -> List[Dict]:
+        """Helper method for weighted average hybrid retrieval (original implementation)"""
+        from config import HYBRID_WEIGHT_SEMANTIC, HYBRID_WEIGHT_KEYWORD
         
         # Group semantic results by case_id and keep top N=3 chunks per case
         case_chunks = {}  # case_id -> list of chunk dicts
@@ -419,9 +715,7 @@ class HybridRetriever:
             Dict with complete judgment information
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                
+            with self._get_db_connection() as (cursor, conn):
                 # Determine available columns using PRAGMA
                 cols = set(r[1] for r in cursor.execute("PRAGMA table_info(judgments)").fetchall())
                 base_cols = ["id", "case_number", "case_type", "judgment_date", "petitioner_name", "respondent_name", "full_text"]
@@ -451,14 +745,14 @@ class HybridRetriever:
                 
                 # Get advocates (if table exists)
                 try:
-                    cursor.execute("SELECT name, role FROM advocates WHERE case_id = ?", (case_id,))
+                    cursor.execute("SELECT name, role FROM advocates WHERE judgment_id = ?", (case_id,))
                     judgment['advocates'] = [{"name": row[0], "role": row[1]} for row in cursor.fetchall()]
                 except sqlite3.OperationalError:
                     judgment['advocates'] = []
                 
                 # Get cited laws (if table exists)
                 try:
-                    cursor.execute("SELECT law_name, section FROM laws WHERE case_id = ?", (case_id,))
+                    cursor.execute("SELECT law_name, section FROM laws WHERE judgment_id = ?", (case_id,))
                     judgment['laws'] = [{"law": row[0], "section": row[1]} for row in cursor.fetchall()]
                 except sqlite3.OperationalError:
                     judgment['laws'] = []
@@ -468,6 +762,78 @@ class HybridRetriever:
         except Exception as e:
             logger.error(f"❌ Failed to get full judgment for case_id {case_id}: {e}")
             return {}
+    
+    def _organize_fused_results(self, fused_results: List[Dict], top_k: int) -> List[Dict]:
+        """
+        Organize RRF-fused results into case-level format with chunks
+        
+        Args:
+            fused_results: RRF-fused results with rrf_score
+            top_k: Number of top cases to return
+            
+        Returns:
+            List of case-level results
+        """
+        case_chunks = {}
+        
+        for result in fused_results:
+            case_id = result.get('case_id')
+            if case_id is None:
+                continue
+            
+            if case_id not in case_chunks:
+                case_chunks[case_id] = []
+            
+            # Keep up to 3 chunks per case
+            if len(case_chunks[case_id]) < 3:
+                case_chunks[case_id].append(result)
+        
+        # Build case-level results
+        case_results = []
+        for case_id, chunks in case_chunks.items():
+            if not chunks:
+                continue
+            
+            # Use best chunk for case metadata
+            best_chunk = chunks[0]
+            
+            # Average RRF score for case-level score
+            avg_rrf_score = sum(c.get('rrf_score', 0) for c in chunks) / len(chunks)
+            
+            case_result = {
+                "case_id": case_id,
+                "case_number": best_chunk.get('case_number', 'Unknown'),
+                "case_type": best_chunk.get('case_type', 'Unknown'),
+                "judgment_date": best_chunk.get('judgment_date', 'Unknown'),
+                "petitioner": best_chunk.get('petitioner', 'Unknown'),
+                "respondent": best_chunk.get('respondent', 'Unknown'),
+                "full_case_id": best_chunk.get('full_case_id', 'Unknown'),
+                "chunks": chunks,
+                "hybrid_score": avg_rrf_score,  # Use RRF score as hybrid score
+                "chunk_count": len(chunks)
+            }
+            case_results.append(case_result)
+        
+        # Sort by hybrid score (RRF score)
+        case_results.sort(key=lambda x: x['hybrid_score'], reverse=True)
+        
+        return case_results[:top_k]
+    
+    def invalidate_cache(self):
+        """Clear all caches (useful after reindexing)"""
+        if self.query_cache:
+            try:
+                self.query_cache.invalidate('*')
+                logger.info("✅ Query cache cleared")
+            except Exception as e:
+                logger.error(f"Failed to clear query cache: {e}")
+        
+        if self.embedding_cache:
+            try:
+                self.embedding_cache.invalidate('*')
+                logger.info("✅ Embedding cache cleared")
+            except Exception as e:
+                logger.error(f"Failed to clear embedding cache: {e}")
 
 
 if __name__ == '__main__':
