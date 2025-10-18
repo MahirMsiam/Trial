@@ -6,6 +6,7 @@ import faiss
 from sentence_transformers import SentenceTransformer
 import time
 import os
+import argparse
 
 # --- Configuration ---
 # Updated paths to match your directory structure
@@ -182,7 +183,6 @@ def main():
     index.add(np.array(embeddings, dtype='float32'))
     
     print(f"Saving FAISS index to '{FAISS_INDEX_PATH}'...")
-    faiss.write_index(index, FAISS_INDEX_PATH)
     print(f"✅ FAISS index saved. Total vectors: {index.ntotal}")
 
     # 6. Save the Chunk Map
@@ -210,7 +210,27 @@ def main():
         return
     
     print("\n--- Indexing Process Complete! ---")
+    print("\n💡 To invalidate caches after reindexing, run:")
+    print("   python -c \"from rag_pipeline import RAGPipeline; RAGPipeline().clear_caches()\"")
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Create FAISS index from legal judgments')
+    parser.add_argument('--invalidate-cache', action='store_true', 
+                       help='Invalidate all caches after successful indexing')
+    args = parser.parse_args()
+    
     main()
+    
+    # Optionally invalidate caches if flag is set
+    if args.invalidate_cache:
+        try:
+            print("\nInvalidating caches...")
+            from rag_pipeline import RAGPipeline
+            pipeline = RAGPipeline()
+            pipeline.clear_caches()
+            print("✅ Caches invalidated successfully")
+        except Exception as e:
+            print(f"⚠️  Failed to invalidate caches: {e}")
+            print("   You can manually run: python -c \"from rag_pipeline import RAGPipeline; RAGPipeline().clear_caches()\"")
+
 
