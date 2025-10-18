@@ -88,9 +88,17 @@ class BM25Ranker:
         Returns:
             BM25 score (higher is better)
         """
+        # Early return when avgdl is 0 (empty corpus or no tokens)
+        if self.avgdl == 0:
+            return 0.0
+        
         query_tokens = self._tokenize(query)
         doc_tokens = self._tokenize(document)
         doc_length = len(doc_tokens)
+        
+        # Early return when document length is 0
+        if doc_length == 0:
+            return 0.0
         
         # Count term frequencies in document
         doc_term_freqs = Counter(doc_tokens)
@@ -111,6 +119,11 @@ class BM25Ranker:
             # score += IDF(qi) * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * |D| / avgdl))
             numerator = tf * (self.k1 + 1)
             denominator = tf + self.k1 * (1 - self.b + self.b * doc_length / self.avgdl)
+            
+            # Skip if denominator would be zero (shouldn't happen with proper avgdl check, but defensive)
+            if denominator == 0:
+                continue
+            
             score += idf * (numerator / denominator)
         
         return score
