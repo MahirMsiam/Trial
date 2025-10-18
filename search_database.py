@@ -15,7 +15,10 @@ class JudgmentSearch:
     
     def __init__(self, db_path: str = "extracted_data/database.db"):
         try:
-            self.conn = sqlite3.connect(db_path)
+            # check_same_thread=False allows connection to be used across threads
+            # This is necessary for FastAPI's TestClient which uses threading
+            # For production, each request gets its own connection via dependency injection
+            self.conn = sqlite3.connect(db_path, check_same_thread=False)
             self.conn.row_factory = sqlite3.Row
         except sqlite3.Error as e:
             print(f"❌ Error: Could not connect to database at '{db_path}'")
