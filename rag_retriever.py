@@ -22,13 +22,14 @@ logger = logging.getLogger(__name__)
 # Import caching and ranking modules
 try:
     from cache_manager import QueryCache, EmbeddingCache
-    from ranking_algorithms import BM25Ranker, ReciprocalRankFusion
+    from ranking_algorithms import BM25Ranker, ReciprocalRankFusion, normalize_scores
     CACHING_AVAILABLE = True
     RANKING_AVAILABLE = True
 except ImportError as e:
     logger.warning(f"Optional modules not available: {e}")
     CACHING_AVAILABLE = False
     RANKING_AVAILABLE = False
+    normalize_scores = None  # Define fallback
 
 # Module-level connection pool
 _connection_pool = None
@@ -70,7 +71,8 @@ class HybridRetriever:
         if CACHE_ENABLED and CACHING_AVAILABLE:
             try:
                 self.query_cache = QueryCache()
-                self.embedding_cache = EmbeddingCache()
+                # Pass EMBEDDING_MODEL as model_id to EmbeddingCache
+                self.embedding_cache = EmbeddingCache(model_id=EMBEDDING_MODEL)
                 logger.info("✅ Caching enabled (query and embedding caches initialized)")
             except Exception as e:
                 logger.warning(f"⚠️  Failed to initialize caching: {e}")
@@ -315,6 +317,13 @@ class HybridRetriever:
         Returns:
             List of matching judgments with metadata
         """
+        # Coerce and bound limit safely
+        try:
+            limit = int(limit or TOP_K_SQL_RESULTS)
+        except Exception:
+            limit = TOP_K_SQL_RESULTS
+        limit = max(1, min(limit, 1000))
+        
         # Check query cache
         if self.query_cache:
             try:
@@ -404,7 +413,9 @@ class HybridRetriever:
                 if conditions:
                     sql += " AND " + " AND ".join(conditions)
                 
-                sql += f" LIMIT {limit}"
+                # Parameterize LIMIT for safety
+                sql += " LIMIT ?"
+                params.append(limit)
                 
                 cursor.execute(sql, params)
                 rows = cursor.fetchall()
@@ -453,16 +464,19 @@ class HybridRetriever:
             logger.error(f"❌ Keyword search failed: {e}")
             return []
     
-    def retrieve_by_crime_category(self, query: str) -> List[Dict]:
+    def retrieve_by_crime_category(self, query: str, limit_per_crime: int = 50) -> List[Dict]:
         """
         Retrieve cases by crime category using predefined keywords.
         
         Args:
             query: Search query potentially containing crime keywords
+            limit_per_crime: Maximum results per crime type
             
         Returns:
             List of cases matching detected crime categories
         """
+        import hashlib
+        
         logger.info(f"Checking for crime categories in: '{query}'")
         
         detected_crimes = []
@@ -481,16 +495,44 @@ class HybridRetriever:
         
         logger.info(f"Detected crime categories: {[c[0] for c in detected_crimes]}")
         
-        # Search for all detected crime types
+        def norm_hash(text):
+            """Normalize text and compute hash for deduplication"""
+            normalized = (text or '')[:300].lower()
+            return hashlib.md5(normalized.encode()).hexdigest()
+        
+        # Search for all detected crime types with per-crime deduplication
         all_results = []
         for crime_type, keyword in detected_crimes:
-            results = self.retrieve_keyword(keyword, filters=None)
+            # Fetch extra results for headroom
+            results = self.retrieve_keyword(keyword, filters=None, limit=limit_per_crime * 2)
+            
+            # Deduplicate within this crime type
+            seen_ids = set()
+            seen_hashes = set()
+            crime_unique = []
+            
             for result in results:
-                result['crime_category'] = crime_type
-                result['matched_keyword'] = keyword
-            all_results.extend(results)
+                case_id = result['case_id']
+                text_hash = norm_hash(result.get('chunk_text', ''))
+                
+                if case_id not in seen_ids and text_hash not in seen_hashes:
+                    seen_ids.add(case_id)
+                    seen_hashes.add(text_hash)
+                    result['crime_category'] = crime_type
+                    result['matched_keyword'] = keyword
+                    crime_unique.append(result)
+                    
+                    if len(crime_unique) >= limit_per_crime:
+                        break
+            
+            # If BM25 scores available, keep top results by score
+            if crime_unique and 'bm25_score' in crime_unique[0]:
+                crime_unique.sort(key=lambda x: x.get('bm25_score', 0), reverse=True)
+                crime_unique = crime_unique[:limit_per_crime]
+            
+            all_results.extend(crime_unique)
         
-        # Deduplicate by case_id
+        # Final cross-crime deduplication by case_id
         seen_ids = set()
         unique_results = []
         for result in all_results:
@@ -530,7 +572,7 @@ class HybridRetriever:
         
         logger.info(f"Performing hybrid retrieval for: '{query}'")
         
-        from config import HYBRID_WEIGHT_SEMANTIC, HYBRID_WEIGHT_KEYWORD
+        from config import HYBRID_WEIGHT_SEMANTIC, HYBRID_WEIGHT_KEYWORD, CRIME_WEIGHT_HYBRID
         
         # Check for crime categories first
         crime_results = self.retrieve_by_crime_category(query)
@@ -564,7 +606,7 @@ class HybridRetriever:
                 
                 if crime_results:
                     ranked_lists.append(crime_results)
-                    weights.append(0.2)  # Weight for crime results
+                    weights.append(CRIME_WEIGHT_HYBRID)  # Configurable weight for crime results
                 
                 # Fuse with RRF
                 fused_results = self.rrf.fuse_with_weights(ranked_lists, weights, id_field='case_id')
@@ -601,6 +643,24 @@ class HybridRetriever:
         """Helper method for weighted average hybrid retrieval (original implementation)"""
         from config import HYBRID_WEIGHT_SEMANTIC, HYBRID_WEIGHT_KEYWORD
         
+        # Normalize BM25 scores in keyword results using helper function
+        if keyword_results and 'bm25_score' in keyword_results[0]:
+            if normalize_scores:
+                # Use helper function from ranking_algorithms
+                keyword_results = normalize_scores(keyword_results, 'bm25_score')
+                # Copy normalized score to _bm25_norm for backward compatibility
+                for r in keyword_results:
+                    r['_bm25_norm'] = r.get('bm25_score_normalized', 0.0)
+            else:
+                # Fallback: manual normalization
+                scores = [r.get('bm25_score', 0.0) for r in keyword_results]
+                lo, hi = min(scores), max(scores)
+                for r in keyword_results:
+                    if hi == lo:
+                        r['_bm25_norm'] = 1.0 if hi > 0 else 0.0
+                    else:
+                        r['_bm25_norm'] = (r.get('bm25_score', 0) - lo) / (hi - lo)
+        
         # Group semantic results by case_id and keep top N=3 chunks per case
         case_chunks = {}  # case_id -> list of chunk dicts
         
@@ -630,18 +690,21 @@ class HybridRetriever:
                 # Create preview chunk for keyword-only case
                 case_chunks[case_id] = []
             
+            # Use normalized BM25 score if available, otherwise default to 1.0
+            keyword_score = result.get('_bm25_norm', 1.0)
+            
             # Check if we already have this chunk (by text similarity)
             is_duplicate = False
             for existing in case_chunks[case_id]:
                 if existing['chunk_text'][:100] == result['chunk_text'][:100]:
-                    # Merge scores
-                    existing['keyword_score'] = 1.0
+                    # Merge scores - use max BM25 score for duplicates
+                    existing['keyword_score'] = max(existing['keyword_score'], keyword_score)
                     is_duplicate = True
                     break
             
             if not is_duplicate and len(case_chunks[case_id]) < 3:
                 result['semantic_score'] = 0.0
-                result['keyword_score'] = 1.0
+                result['keyword_score'] = keyword_score
                 case_chunks[case_id].append(result)
         
         # Add crime results
