@@ -32,6 +32,7 @@ TOP_K_SQL_RESULTS = int(os.getenv('TOP_K_SQL_RESULTS', '10'))  # number of SQL k
 SIMILARITY_THRESHOLD = float(os.getenv('SIMILARITY_THRESHOLD', '0.6'))  # minimum cosine similarity (range: -1 to 1)
 HYBRID_WEIGHT_SEMANTIC = float(os.getenv('HYBRID_WEIGHT_SEMANTIC', '0.6'))  # weight for semantic search
 HYBRID_WEIGHT_KEYWORD = float(os.getenv('HYBRID_WEIGHT_KEYWORD', '0.4'))  # weight for keyword search
+CRIME_WEIGHT_HYBRID = float(os.getenv('CRIME_WEIGHT_HYBRID', '0.2'))  # weight for crime category results in RRF
 
 # --- Chat Configuration ---
 MAX_HISTORY_TURNS = int(os.getenv('MAX_HISTORY_TURNS', '5'))  # number of conversation turns in context
@@ -57,6 +58,10 @@ CACHE_TTL_QUERY = int(os.getenv('CACHE_TTL_QUERY', '3600'))  # 1 hour
 CACHE_TTL_LLM = int(os.getenv('CACHE_TTL_LLM', '7200'))  # 2 hours
 CACHE_TTL_EMBEDDING = int(os.getenv('CACHE_TTL_EMBEDDING', '86400'))  # 24 hours
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+# Cache size limits (in-memory only; Redis bounded by server maxmemory)
+CACHE_MAX_ITEMS_QUERY = int(os.getenv('CACHE_MAX_ITEMS_QUERY', '5000'))
+CACHE_MAX_ITEMS_LLM = int(os.getenv('CACHE_MAX_ITEMS_LLM', '2000'))
+CACHE_MAX_ITEMS_EMBEDDING = int(os.getenv('CACHE_MAX_ITEMS_EMBEDDING', '5000'))
 
 # --- Advanced Ranking Configuration ---
 USE_BM25 = os.getenv('USE_BM25', 'false').lower() == 'true'
