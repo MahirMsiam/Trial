@@ -47,6 +47,19 @@ app.include_router(cases_router)
 app.include_router(session_router)
 app.include_router(utility_router)
 
+# Enable Prometheus metrics if configured
+from config import ENABLE_METRICS
+
+if ENABLE_METRICS:
+    try:
+        from prometheus_fastapi_instrumentator import Instrumentator
+        Instrumentator().instrument(app).expose(app)
+        logger.info("✅ Metrics enabled at /metrics")
+    except ImportError:
+        logger.warning("⚠️  prometheus-fastapi-instrumentator not installed. Install with: pip install prometheus-fastapi-instrumentator")
+    except Exception as e:
+        logger.warning(f"⚠️  Failed to enable metrics: {e}")
+
 
 @app.on_event("startup")
 async def startup_event():
