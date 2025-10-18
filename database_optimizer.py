@@ -46,7 +46,7 @@ def analyze_query_performance(db_path: str = DATABASE_PATH) -> Dict:
         ("Keyword search on full_text", "SELECT * FROM judgments WHERE full_text LIKE '%murder%' LIMIT 10"),
         ("Filter by case_type", "SELECT * FROM judgments WHERE case_type = 'Criminal Appeal' LIMIT 10"),
         ("Filter by year", "SELECT * FROM judgments WHERE case_year = 2023 LIMIT 10"),
-        ("Filter by petitioner", "SELECT * FROM judgments WHERE petitioner LIKE '%State%' LIMIT 10"),
+        ("Filter by petitioner", "SELECT * FROM judgments WHERE petitioner_name LIKE '%State%' LIMIT 10"),
         ("Composite filter", "SELECT * FROM judgments WHERE case_type = 'Criminal Appeal' AND case_year = 2023 LIMIT 10"),
         ("JOIN with advocates", "SELECT j.*, a.advocate_name FROM judgments j JOIN advocates a ON j.id = a.judgment_id LIMIT 10"),
         ("JOIN with laws", "SELECT j.*, l.law_text FROM judgments j JOIN laws l ON j.id = l.judgment_id LIMIT 10"),
@@ -214,6 +214,15 @@ def get_database_stats(db_path: str = DATABASE_PATH) -> Dict:
         # Database file size
         stats['database_size_mb'] = os.path.getsize(db_path) / 1024 / 1024
         
+        # Detect if dbstat is available
+        has_dbstat = True
+        try:
+            cursor.execute("SELECT 1 FROM dbstat LIMIT 1")
+            cursor.fetchone()
+        except Exception:
+            has_dbstat = False
+            logger.warning("dbstat virtual table not available; table/index sizes will be estimated or omitted")
+        
         # Get table sizes and row counts
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
         tables = cursor.fetchall()
@@ -221,17 +230,27 @@ def get_database_stats(db_path: str = DATABASE_PATH) -> Dict:
         stats['tables'] = {}
         for (table_name,) in tables:
             # Row count
-            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
-            row_count = cursor.fetchone()[0]
+            try:
+                cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+                row_count = cursor.fetchone()[0]
+            except Exception as e:
+                logger.warning(f"Failed to get row count for {table_name}: {e}")
+                row_count = 0
             
-            # Estimate table size (page_count * page_size)
-            cursor.execute(f"SELECT SUM(pgsize) FROM dbstat WHERE name='{table_name}'")
-            result = cursor.fetchone()
-            table_size = result[0] if result[0] else 0
+            # Estimate table size
+            table_size_mb = None
+            if has_dbstat:
+                try:
+                    cursor.execute(f"SELECT SUM(pgsize) FROM dbstat WHERE name='{table_name}'")
+                    result = cursor.fetchone()
+                    table_size = result[0] if result[0] else 0
+                    table_size_mb = table_size / 1024 / 1024
+                except Exception as e:
+                    logger.warning(f"Failed to get size for {table_name} via dbstat: {e}")
             
             stats['tables'][table_name] = {
                 'row_count': row_count,
-                'size_mb': table_size / 1024 / 1024
+                'size_mb': table_size_mb
             }
         
         # Get index information
@@ -240,18 +259,24 @@ def get_database_stats(db_path: str = DATABASE_PATH) -> Dict:
         
         stats['indexes'] = {}
         for (index_name,) in indexes:
-            cursor.execute(f"SELECT SUM(pgsize) FROM dbstat WHERE name='{index_name}'")
-            result = cursor.fetchone()
-            index_size = result[0] if result[0] else 0
+            index_size_mb = None
+            if has_dbstat:
+                try:
+                    cursor.execute(f"SELECT SUM(pgsize) FROM dbstat WHERE name='{index_name}'")
+                    result = cursor.fetchone()
+                    index_size = result[0] if result[0] else 0
+                    index_size_mb = index_size / 1024 / 1024
+                except Exception as e:
+                    logger.warning(f"Failed to get size for index {index_name}: {e}")
             
             stats['indexes'][index_name] = {
-                'size_mb': index_size / 1024 / 1024
+                'size_mb': index_size_mb
             }
         
         stats['total_indexes'] = len(indexes)
         stats['total_tables'] = len(tables)
         
-        # Identify largest tables
+        # Identify largest tables by row count
         largest_tables = sorted(
             stats['tables'].items(),
             key=lambda x: x[1]['row_count'],
