@@ -20,7 +20,11 @@ from config import (
     CACHE_TTL_QUERY,
     CACHE_TTL_LLM,
     CACHE_TTL_EMBEDDING,
-    REDIS_URL
+    REDIS_URL,
+    CACHE_MAX_ITEMS_QUERY,
+    CACHE_MAX_ITEMS_LLM,
+    CACHE_MAX_ITEMS_EMBEDDING,
+    CACHE_VERSION
 )
 
 logger = logging.getLogger(__name__)
@@ -241,7 +245,7 @@ class QueryCache(CacheManager):
     """Specialized cache for search results"""
     
     def __init__(self):
-        super().__init__(default_ttl=CACHE_TTL_QUERY)
+        super().__init__(default_ttl=CACHE_TTL_QUERY, max_items=CACHE_MAX_ITEMS_QUERY)
     
     def cache_search_results(self, query: str, filters: Dict, results: list, ttl: Optional[int] = None):
         """
@@ -286,7 +290,7 @@ class LLMResponseCache(CacheManager):
     """Specialized cache for LLM responses"""
     
     def __init__(self):
-        super().__init__(default_ttl=CACHE_TTL_LLM)
+        super().__init__(default_ttl=CACHE_TTL_LLM, max_items=CACHE_MAX_ITEMS_LLM)
     
     def cache_llm_response(self, query: str, context_hash: str, response: str, ttl: Optional[int] = None):
         """
@@ -326,10 +330,17 @@ class LLMResponseCache(CacheManager):
 
 
 class EmbeddingCache(CacheManager):
-    """Specialized cache for query embeddings"""
+    """Specialized cache for embeddings"""
     
-    def __init__(self):
-        super().__init__(default_ttl=CACHE_TTL_EMBEDDING)
+    def __init__(self, model_id: Optional[str] = None):
+        """
+        Initialize embedding cache with optional model_id
+        
+        Args:
+            model_id: Embedding model identifier (e.g., EMBEDDING_MODEL)
+        """
+        super().__init__(default_ttl=CACHE_TTL_EMBEDDING, max_items=CACHE_MAX_ITEMS_EMBEDDING)
+        self.model_id = model_id or "default"
     
     def cache_embedding(self, text: str, embedding: list, ttl: Optional[int] = None):
         """
@@ -356,13 +367,22 @@ class EmbeddingCache(CacheManager):
         cache_key = self._generate_embedding_key(text)
         return self.get(cache_key)
     
-    @staticmethod
-    def _generate_embedding_key(text: str) -> str:
-        """Generate cache key from text"""
+    def _generate_embedding_key(self, text: str) -> str:
+        """
+        Generate cache key from text, model_id, and CACHE_VERSION
+        
+        Args:
+            text: Text to generate key for
+            
+        Returns:
+            Cache key string
+        """
         # Normalize text
         normalized_text = text.lower().strip()
-        text_hash = hashlib.md5(normalized_text.encode()).hexdigest()
-        return f"embedding:{text_hash}"
+        # Combine model_id, CACHE_VERSION, and text for hash
+        key_data = f"{self.model_id}:{CACHE_VERSION}:{normalized_text}"
+        text_hash = hashlib.md5(key_data.encode()).hexdigest()
+        return f"embedding:{self.model_id}:{CACHE_VERSION}:{text_hash}"
 
 
 # Module-level function for easy access
