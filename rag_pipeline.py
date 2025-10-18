@@ -332,29 +332,86 @@ class RAGPipeline:
         if not detected_crime:
             return self._handle_no_results(query)
         
-        # Retrieve cases
-        cases = self.retriever.retrieve_by_crime_category(query)[:limit]
+        # Normalize and bound limit
+        try:
+            limit = int(limit or 20)
+        except Exception:
+            limit = 20
+        limit = max(1, min(limit, 200))
+        
+        # Try to get cached cases
+        from config import CACHE_VERSION, CACHE_TTL_QUERY, CACHE_TTL_LLM
+        import hashlib
+        import json
+        
+        crime_cache_key = f"crime:{CACHE_VERSION}:{detected_crime}:{limit}"
+        cases = None
+        
+        if self.retriever.query_cache:
+            try:
+                cases = self.retriever.query_cache.get(crime_cache_key)
+                if cases is not None:
+                    logger.info(f"✅ Cache hit for crime search: {detected_crime}")
+            except Exception as e:
+                logger.warning(f"Crime cache get failed: {e}")
+        
+        # Retrieve cases if not cached
+        if cases is None:
+            cases = self.retriever.retrieve_by_crime_category(query)[:limit]
+            
+            # Cache the results
+            if self.retriever.query_cache:
+                try:
+                    self.retriever.query_cache.set(crime_cache_key, cases, ttl=CACHE_TTL_QUERY)
+                except Exception as e:
+                    logger.warning(f"Crime cache set failed: {e}")
         
         if not cases:
             return {
                 "response": f"No cases found for crime type: {detected_crime}",
-                "crime_type": detected_crime,
+                "detected_crime": detected_crime,
                 "count": 0,
-                "cases": [],
+                "results": [],
                 "summary": None
             }
         
-        # Generate summary using LLM
-        crime_prompt = prompt_templates.build_crime_category_prompt(query, detected_crime, cases)
-        system_prompt = prompt_templates.get_system_prompt()
+        # Try to get cached LLM summary
+        # Compute context hash from first 200 chars of each case chunk_text
+        try:
+            context_texts = [(c.get('chunk_text', '') or '')[:200] for c in cases[:10]]
+            context_hash = hashlib.md5(json.dumps(context_texts, sort_keys=True).encode()).hexdigest()
+        except Exception as e:
+            logger.warning(f"Failed to compute context hash: {e}")
+            context_hash = "fallback"
         
-        summary = self.llm_client.generate(crime_prompt, system_prompt)
+        summary = None
+        if self.llm_cache:
+            try:
+                summary = self.llm_cache.get_cached_llm_response(query, context_hash)
+                if summary is not None:
+                    logger.info(f"✅ Cache hit for crime LLM summary")
+            except Exception as e:
+                logger.warning(f"LLM cache get failed: {e}")
+        
+        # Generate summary if not cached
+        if summary is None:
+            crime_prompt = prompt_templates.build_crime_category_prompt(query, detected_crime, cases)
+            system_prompt = prompt_templates.get_system_prompt()
+            
+            summary = self.llm_client.generate(crime_prompt, system_prompt)
+            
+            # Cache the summary
+            if self.llm_cache:
+                try:
+                    self.llm_cache.cache_llm_response(query, context_hash, summary, ttl=CACHE_TTL_LLM)
+                except Exception as e:
+                    logger.warning(f"LLM cache set failed: {e}")
         
         return {
             "response": summary,
-            "crime_type": detected_crime,
+            "detected_crime": detected_crime,
             "count": len(cases),
-            "cases": cases,
+            "results": cases,
             "summary": summary
         }
     
