@@ -48,7 +48,7 @@ export default function CaseCard({
               <Checkbox
                 checked={isSelected}
                 onCheckedChange={handleCheckboxChange}
-                onClick={(e) => e.stopPropagation()}
+                onClick={(e: React.MouseEvent) => e.stopPropagation()}
               />
             )}
             <div className="space-y-1 flex-1">
