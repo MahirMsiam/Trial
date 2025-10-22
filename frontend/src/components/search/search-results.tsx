@@ -1,6 +1,8 @@
 'use client';
 
+import CaseComparisonModal from '@/components/case/case-comparison-modal';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 import { SearchMode } from '@/hooks/use-search';
 import type {
     CaseResult,
@@ -8,7 +10,8 @@ import type {
     CrimeSearchResponse,
     SearchResultResponse,
 } from '@/types/api';
-import { Loader2 } from 'lucide-react';
+import { GitCompare, Loader2 } from 'lucide-react';
+import { useState } from 'react';
 import CaseCard from './case-card';
 
 interface SearchResultsProps {
@@ -26,6 +29,30 @@ export default function SearchResults({
   error,
   onCaseClick,
 }: SearchResultsProps) {
+  const [selectedCaseIds, setSelectedCaseIds] = useState<number[]>([]);
+  const [showComparison, setShowComparison] = useState(false);
+  const [isCompareMode, setIsCompareMode] = useState(false);
+
+  const toggleCaseSelection = (caseId: number) => {
+    setSelectedCaseIds(prev =>
+      prev.includes(caseId)
+        ? prev.filter(id => id !== caseId)
+        : [...prev, caseId]
+    );
+  };
+
+  const handleCompare = () => {
+    if (selectedCaseIds.length >= 2) {
+      setShowComparison(true);
+    }
+  };
+
+  const handleCloseComparison = () => {
+    setShowComparison(false);
+    setSelectedCaseIds([]);
+    setIsCompareMode(false);
+  };
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -52,18 +79,52 @@ export default function SearchResults({
   if (searchMode === 'keyword' && 'results' in results) {
     return (
       <div className="space-y-4">
-        <h2 className="text-xl font-semibold">
-          Found {results.count} {results.count === 1 ? 'result' : 'results'}
-        </h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-semibold">
+            Found {results.count} {results.count === 1 ? 'result' : 'results'}
+          </h2>
+          <div className="flex gap-2">
+            {results.results.length > 1 && (
+              <Button
+                variant={isCompareMode ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => {
+                  setIsCompareMode(!isCompareMode);
+                  if (isCompareMode) {
+                    setSelectedCaseIds([]);
+                  }
+                }}
+              >
+                <GitCompare className="h-4 w-4 mr-2" />
+                {isCompareMode ? 'Cancel Compare' : 'Compare Cases'}
+              </Button>
+            )}
+            {isCompareMode && selectedCaseIds.length >= 2 && (
+              <Button size="sm" onClick={handleCompare}>
+                Compare {selectedCaseIds.length} Cases
+              </Button>
+            )}
+          </div>
+        </div>
         <div className="grid gap-4">
           {results.results.map((caseData) => (
             <CaseCard
               key={caseData.id}
               caseData={caseData}
               onClick={() => onCaseClick(caseData.id)}
+              isSelected={selectedCaseIds.includes(caseData.id)}
+              onSelect={(_selected: boolean) => toggleCaseSelection(caseData.id)}
+              showCheckbox={isCompareMode}
             />
           ))}
         </div>
+        
+        {/* Comparison Modal */}
+        <CaseComparisonModal
+          isOpen={showComparison}
+          onClose={handleCloseComparison}
+          caseIds={selectedCaseIds}
+        />
       </div>
     );
   }
