@@ -29,7 +29,7 @@ export default function SearchBar({
     }
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       handleSearch();
     }
@@ -59,7 +59,7 @@ export default function SearchBar({
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            onKeyPress={handleKeyPress}
+            onKeyDown={handleKeyDown}
             placeholder={placeholderText}
             className="pl-10 pr-10"
           />
