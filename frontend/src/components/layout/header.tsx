@@ -17,7 +17,12 @@ export default function Header({ currentPage }: HeaderProps) {
     const checkHealth = async () => {
       try {
         const health = await apiClient.getHealth();
-        setIsHealthy(health.status === 'healthy');
+        const statusLower = health.status?.toLowerCase?.();
+        setIsHealthy(
+          statusLower === 'healthy' || 
+          statusLower === 'ok' || 
+          health.database_connected === true
+        );
       } catch {
         setIsHealthy(false);
       }
