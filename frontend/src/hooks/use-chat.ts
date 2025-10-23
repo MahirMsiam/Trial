@@ -26,22 +26,23 @@ export function useChat(sessionId: string | null) {
       try {
         const history = await apiClient.getSessionHistory(sessionId);
         
-        // Transform history to messages format
+        // Transform history to messages format with guards
         const loadedMessages: Message[] = [];
         for (const turn of history) {
-          if (turn.query) {
+          // Guard against missing fields
+          if (turn.query && typeof turn.query === 'string') {
             loadedMessages.push({
               role: 'user',
               content: turn.query,
-              timestamp: new Date(turn.timestamp || Date.now()),
+              timestamp: turn.timestamp ? new Date(turn.timestamp) : new Date(Date.now()),
             });
           }
-          if (turn.response) {
+          if (turn.response && typeof turn.response === 'string') {
             loadedMessages.push({
               role: 'assistant',
               content: turn.response,
-              timestamp: new Date(turn.timestamp || Date.now()),
-              sources: turn.sources || [],
+              timestamp: turn.timestamp ? new Date(turn.timestamp) : new Date(Date.now()),
+              sources: Array.isArray(turn.sources) ? turn.sources : [],
             });
           }
         }
