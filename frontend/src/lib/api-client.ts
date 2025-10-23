@@ -1,3 +1,4 @@
+import { getSessionId } from '@/lib/utils';
 import type {
     CaseComparisonResponse,
     CaseResult,
@@ -51,11 +52,9 @@ class APIClient {
           const isSessionDelete = method === 'DELETE' && url.match(/^\/api\/session\/[^/]+$/);
           
           if ((isChatEndpoint || isChatStreamEndpoint) && !isSessionCreate && !isSessionDelete) {
-            const sessionId = localStorage.getItem('session_id');
+            const sessionId = getSessionId();
             if (sessionId) {
-              // Remove quotes if the value is JSON stringified
-              const cleanSessionId = sessionId.replace(/^"(.*)"$/, '$1');
-              config.data.session_id = config.data.session_id || cleanSessionId;
+              config.data.session_id = config.data.session_id || sessionId;
             }
           }
         }
@@ -231,7 +230,16 @@ class APIClient {
               const parsed = JSON.parse(accumulatedData);
               yield parsed as StreamChunk;
             } catch (e) {
-              console.error('Failed to parse SSE data:', e, 'Data:', accumulatedData);
+              // If JSON parsing fails but data is non-empty, treat as plain text token
+              if (accumulatedData.trim()) {
+                console.warn('SSE data is not valid JSON, treating as plain text token:', accumulatedData);
+                yield {
+                  type: 'token',
+                  token: accumulatedData,
+                } as StreamChunk;
+              } else {
+                console.error('Failed to parse SSE data:', e, 'Data:', accumulatedData);
+              }
             }
             
             // Reset accumulator
@@ -247,7 +255,16 @@ class APIClient {
             const parsed = JSON.parse(accumulatedData);
             yield parsed as StreamChunk;
           } catch (e) {
-            console.error('Failed to parse final SSE data:', e, 'Data:', accumulatedData);
+            // If JSON parsing fails but data is non-empty, treat as plain text token
+            if (accumulatedData.trim()) {
+              console.warn('Final SSE data is not valid JSON, treating as plain text token:', accumulatedData);
+              yield {
+                type: 'token',
+                token: accumulatedData,
+              } as StreamChunk;
+            } else {
+              console.error('Failed to parse final SSE data:', e, 'Data:', accumulatedData);
+            }
           }
         }
       }
