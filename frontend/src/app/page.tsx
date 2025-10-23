@@ -20,6 +20,9 @@ export default function HomePage() {
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const [selectedCrime, setSelectedCrime] = useState<CrimeCategory | null>(null);
 
+  // Check if crime search is enabled
+  const crimeSearchEnabled = process.env.NEXT_PUBLIC_ENABLE_CRIME_SEARCH !== 'false';
+
   return (
     <MainLayout currentPage="search">
       <div className="max-w-7xl mx-auto space-y-8">
@@ -38,7 +41,9 @@ export default function HomePage() {
           <div className="flex-1">
             <SearchBar
               onSearch={(query, mode) => {
-                search.executeSearch({ query, mode, immediate: true });
+                // Prevent crime mode if disabled
+                const searchMode = (!crimeSearchEnabled && mode === 'crime') ? 'keyword' : mode;
+                search.executeSearch({ query, mode: searchMode, immediate: true });
               }}
               initialQuery={search.query}
               initialMode={search.searchMode}
@@ -55,8 +60,8 @@ export default function HomePage() {
           </Button>
         </div>
 
-        {/* Crime Categories - show when no results */}
-        {!search.hasResults && !search.isLoading && (
+        {/* Crime Categories - show when no results and feature is enabled */}
+        {crimeSearchEnabled && !search.hasResults && !search.isLoading && (
           <CrimeCategories
             selectedCategory={selectedCrime}
             onCategorySelect={(category) => {
