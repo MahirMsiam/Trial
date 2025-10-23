@@ -22,34 +22,57 @@ export function useSearch() {
   const [shouldSearch, setShouldSearch] = useState(false);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Read environment variables
+  const defaultTopK = parseInt(process.env.NEXT_PUBLIC_DEFAULT_TOP_K || '10', 10);
+  const maxSearchResults = parseInt(process.env.NEXT_PUBLIC_MAX_SEARCH_RESULTS || '50', 10);
+
   // Keyword search query
   const keywordSearchQuery = useQuery({
     queryKey: ['search', 'keyword', query, filters],
-    queryFn: () => apiClient.searchKeyword({ query, filters }),
+    queryFn: async () => {
+      const response = await apiClient.searchKeyword({ query, filters });
+      // Limit results based on NEXT_PUBLIC_MAX_SEARCH_RESULTS
+      if (response.results && response.results.length > maxSearchResults) {
+        return {
+          ...response,
+          results: response.results.slice(0, maxSearchResults),
+          count: response.results.length, // Keep original count
+        };
+      }
+      return response;
+    },
     enabled: shouldSearch && searchMode === 'keyword',
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
 
   // Semantic search query
   const semanticSearchQuery = useQuery({
-    queryKey: ['search', 'semantic', query, filters],
-    queryFn: () => apiClient.searchSemantic({ query, filters, top_k: 10 }),
+    queryKey: ['search', 'semantic', query, filters, defaultTopK],
+    queryFn: async () => {
+      const results = await apiClient.searchSemantic({ query, filters, top_k: defaultTopK });
+      // Limit results based on NEXT_PUBLIC_MAX_SEARCH_RESULTS
+      return results.slice(0, maxSearchResults);
+    },
     enabled: shouldSearch && searchMode === 'semantic',
     staleTime: 5 * 60 * 1000,
   });
 
   // Hybrid search query
   const hybridSearchQuery = useQuery({
-    queryKey: ['search', 'hybrid', query, filters],
-    queryFn: () => apiClient.searchHybrid({ query, filters, top_k: 10 }),
+    queryKey: ['search', 'hybrid', query, filters, defaultTopK],
+    queryFn: async () => {
+      const results = await apiClient.searchHybrid({ query, filters, top_k: defaultTopK });
+      // Limit results based on NEXT_PUBLIC_MAX_SEARCH_RESULTS
+      return results.slice(0, maxSearchResults);
+    },
     enabled: shouldSearch && searchMode === 'hybrid',
     staleTime: 5 * 60 * 1000,
   });
 
   // Crime search query
   const crimeSearchQuery = useQuery({
-    queryKey: ['search', 'crime', query],
-    queryFn: () => apiClient.searchCrime({ query, limit: 20 }),
+    queryKey: ['search', 'crime', query, maxSearchResults],
+    queryFn: () => apiClient.searchCrime({ query, limit: maxSearchResults }),
     enabled: shouldSearch && searchMode === 'crime',
     staleTime: 5 * 60 * 1000,
   });
@@ -129,18 +152,24 @@ export function useSearch() {
     
     if (!searchQuery.trim()) return;
     
-    // Update state if parameters provided
-    if (params?.query !== undefined) setQuery(params.query);
-    if (params?.mode !== undefined) setSearchMode(params.mode);
-    if (params?.filters !== undefined) setFilters(params.filters);
-    
     // Clear existing timer
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
     }
     
     const performSearch = () => {
-      setShouldSearch(true);
+      // Update state first if parameters provided, then enable search on next tick
+      if (params?.query !== undefined) setQuery(params.query);
+      if (params?.filters !== undefined) setFilters(params.filters);
+      
+      // If mode is changing, update it first and defer search to next tick
+      if (params?.mode !== undefined && params.mode !== searchMode) {
+        setSearchMode(params.mode);
+        // Defer setShouldSearch to allow state update to propagate
+        setTimeout(() => setShouldSearch(true), 0);
+      } else {
+        setShouldSearch(true);
+      }
       
       // Save to search history
       const history = getFromStorage<string[]>(STORAGE_KEYS.SEARCH_HISTORY, []);
