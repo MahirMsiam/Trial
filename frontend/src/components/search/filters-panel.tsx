@@ -8,12 +8,15 @@ import apiClient from '@/lib/api-client';
 import { KeywordFilters } from '@/types/api';
 import { useEffect, useState } from 'react';
 
+type SearchMode = 'keyword' | 'semantic' | 'hybrid' | 'crime';
+
 interface FiltersPanelProps {
   filters: KeywordFilters;
   onFiltersChange: (filters: KeywordFilters) => void;
   onClear: () => void;
   isOpen: boolean;
   onClose: () => void;
+  searchMode?: SearchMode;
 }
 
 export default function FiltersPanel({
@@ -22,9 +25,13 @@ export default function FiltersPanel({
   onClear,
   isOpen,
   onClose,
+  searchMode = 'keyword',
 }: FiltersPanelProps) {
   const [localFilters, setLocalFilters] = useState<KeywordFilters>(filters);
   const [caseTypes, setCaseTypes] = useState<string[]>([]);
+  
+  // Determine if court and date filters are supported
+  const supportsCourtAndDateFilters = searchMode === 'semantic' || searchMode === 'hybrid';
 
   useEffect(() => {
     const fetchCaseTypes = async () => {
@@ -169,10 +176,18 @@ export default function FiltersPanel({
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">Court</label>
+            <label className="text-sm font-medium flex items-center gap-2">
+              Court
+              {!supportsCourtAndDateFilters && (
+                <span className="text-xs text-muted-foreground" title="Only available in semantic/hybrid mode">
+                  (semantic/hybrid only)
+                </span>
+              )}
+            </label>
             <Select
               value={localFilters.court_name || ''}
               onValueChange={(v) => setLocalFilters({ ...localFilters, court_name: v })}
+              disabled={!supportsCourtAndDateFilters}
             >
               <SelectTrigger>
                 <SelectValue placeholder="Select court" />
@@ -185,22 +200,38 @@ export default function FiltersPanel({
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">Date From</label>
+            <label className="text-sm font-medium flex items-center gap-2">
+              Date From
+              {!supportsCourtAndDateFilters && (
+                <span className="text-xs text-muted-foreground" title="Only available in semantic/hybrid mode">
+                  (semantic/hybrid only)
+                </span>
+              )}
+            </label>
             <Input
               type="date"
               value={localFilters.date_from || ''}
               onChange={(e) => setLocalFilters({ ...localFilters, date_from: e.target.value })}
               placeholder="Start date"
+              disabled={!supportsCourtAndDateFilters}
             />
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">Date To</label>
+            <label className="text-sm font-medium flex items-center gap-2">
+              Date To
+              {!supportsCourtAndDateFilters && (
+                <span className="text-xs text-muted-foreground" title="Only available in semantic/hybrid mode">
+                  (semantic/hybrid only)
+                </span>
+              )}
+            </label>
             <Input
               type="date"
               value={localFilters.date_to || ''}
               onChange={(e) => setLocalFilters({ ...localFilters, date_to: e.target.value })}
               placeholder="End date"
+              disabled={!supportsCourtAndDateFilters}
             />
           </div>
         </div>
