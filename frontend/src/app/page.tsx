@@ -101,6 +101,7 @@ export default function HomePage() {
           }}
           isOpen={isFiltersOpen}
           onClose={() => setIsFiltersOpen(false)}
+          searchMode={search.searchMode}
         />
 
         {/* Case Details Modal */}
