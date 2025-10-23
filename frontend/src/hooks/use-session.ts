@@ -1,5 +1,5 @@
 import apiClient from '@/lib/api-client';
-import { STORAGE_KEYS, removeFromStorage } from '@/lib/utils';
+import { getSessionId, removeSessionId, setSessionId as saveSessionId } from '@/lib/utils';
 import { useCallback, useEffect, useState } from 'react';
 
 export function useSession() {
@@ -12,7 +12,7 @@ export function useSession() {
     const initializeSession = async () => {
       // Check for existing session in localStorage (stored as plain string)
       if (typeof window !== 'undefined') {
-        const existingSessionId = localStorage.getItem(STORAGE_KEYS.SESSION_ID);
+        const existingSessionId = getSessionId();
         
         if (existingSessionId) {
           try {
@@ -43,9 +43,9 @@ export function useSession() {
       const newSessionId = response.session_id;
       
       setSessionId(newSessionId);
-      // Store as plain string, not JSON
+      // Store as plain string using dedicated helper
       if (typeof window !== 'undefined') {
-        localStorage.setItem(STORAGE_KEYS.SESSION_ID, newSessionId);
+        saveSessionId(newSessionId);
       }
       
       console.log('New session created:', newSessionId);
@@ -64,7 +64,7 @@ export function useSession() {
     try {
       await apiClient.deleteSession(sessionId);
       setSessionId(null);
-      removeFromStorage(STORAGE_KEYS.SESSION_ID);
+      removeSessionId();
       
       // Create a new session immediately
       await createNewSession();
