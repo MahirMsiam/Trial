@@ -16,6 +16,7 @@ import type {
     SemanticSearchRequest,
     SessionCreateRequest,
     SessionResponse,
+    SessionTurn,
     StatsResponse,
     StreamChunk,
 } from '@/types/api';
@@ -36,12 +37,22 @@ class APIClient {
     // Request interceptor
     this.client.interceptors.request.use(
       (config) => {
-        // Add session_id only for chat-related endpoints
-        if (typeof window !== 'undefined' && config.url) {
-          const isChatEndpoint = config.url.includes('/chat') || config.url.includes('/session');
-          if (isChatEndpoint) {
+        // Add session_id only for chat endpoints, avoid modifying session management endpoints
+        if (typeof window !== 'undefined' && config.url && config.data) {
+          const method = config.method?.toUpperCase();
+          const url = config.url;
+          
+          // Only inject session_id for chat endpoints
+          const isChatEndpoint = url.includes('/api/chat') && !url.includes('/api/chat/stream');
+          const isChatStreamEndpoint = url.includes('/api/chat/stream');
+          
+          // Skip injection for session creation (POST /api/session) and deletion (DELETE /api/session/:id)
+          const isSessionCreate = method === 'POST' && url === '/api/session';
+          const isSessionDelete = method === 'DELETE' && url.match(/^\/api\/session\/[^/]+$/);
+          
+          if ((isChatEndpoint || isChatStreamEndpoint) && !isSessionCreate && !isSessionDelete) {
             const sessionId = localStorage.getItem('session_id');
-            if (sessionId && config.data) {
+            if (sessionId) {
               // Remove quotes if the value is JSON stringified
               const cleanSessionId = sessionId.replace(/^"(.*)"$/, '$1');
               config.data.session_id = config.data.session_id || cleanSessionId;
@@ -83,7 +94,28 @@ class APIClient {
   // Search Methods
   async searchKeyword(request: KeywordSearchRequest): Promise<SearchResultResponse> {
     try {
-      const response = await this.client.post<SearchResultResponse>('/api/search/keyword', request);
+      // Sanitize filters to only include fields supported by the backend
+      let sanitizedRequest = { ...request };
+      if (request.filters) {
+        const { court_name, date_from, date_to, ...supportedFilters } = request.filters;
+        sanitizedRequest = {
+          ...request,
+          filters: supportedFilters,
+        };
+        
+        // Log removed fields in development
+        if (process.env.NODE_ENV === 'development') {
+          const removedFields = [];
+          if (court_name) removedFields.push('court_name');
+          if (date_from) removedFields.push('date_from');
+          if (date_to) removedFields.push('date_to');
+          if (removedFields.length > 0) {
+            console.warn('Removed unsupported keyword search filters:', removedFields);
+          }
+        }
+      }
+      
+      const response = await this.client.post<SearchResultResponse>('/api/search/keyword', sanitizedRequest);
       return response.data;
     } catch (error) {
       throw this.handleError(error);
@@ -138,6 +170,7 @@ class APIClient {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Accept': 'text/event-stream',
         },
         body: JSON.stringify({
           ...request,
@@ -157,6 +190,7 @@ class APIClient {
 
       const decoder = new TextDecoder();
       let buffer = '';
+      let accumulatedData = ''; // Accumulate multi-line data
 
       while (true) {
         const { done, value } = await reader.read();
@@ -164,23 +198,56 @@ class APIClient {
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
+        // Split on both \r\n and \n for better CRLF compatibility
+        const lines = buffer.split(/\r?\n/);
         buffer = lines.pop() || '';
 
         for (const line of lines) {
+          // Skip heartbeat comments
+          if (line.startsWith(':')) {
+            continue;
+          }
+          
+          // Handle event: lines (optional, for better compatibility)
+          if (line.startsWith('event:')) {
+            // Could handle different event types here if needed
+            continue;
+          }
+          
           if (line.startsWith('data: ')) {
             const data = line.slice(6);
-            
-            if (data === '[DONE]') {
+            accumulatedData += data;
+            // Don't parse yet - continue accumulating
+            continue;
+          }
+          
+          // Empty line signals end of event - parse accumulated data
+          if (!line.trim() && accumulatedData) {
+            if (accumulatedData === '[DONE]') {
               return;
             }
 
             try {
-              const parsed = JSON.parse(data);
+              const parsed = JSON.parse(accumulatedData);
               yield parsed as StreamChunk;
             } catch (e) {
-              console.error('Failed to parse SSE data:', e);
+              console.error('Failed to parse SSE data:', e, 'Data:', accumulatedData);
             }
+            
+            // Reset accumulator
+            accumulatedData = '';
+          }
+        }
+      }
+      
+      // Handle any remaining accumulated data
+      if (accumulatedData) {
+        if (accumulatedData !== '[DONE]') {
+          try {
+            const parsed = JSON.parse(accumulatedData);
+            yield parsed as StreamChunk;
+          } catch (e) {
+            console.error('Failed to parse final SSE data:', e, 'Data:', accumulatedData);
           }
         }
       }
@@ -231,10 +298,10 @@ class APIClient {
     }
   }
 
-  async getSessionHistory(sessionId: string, maxTurns?: number): Promise<any[]> {
+  async getSessionHistory(sessionId: string, maxTurns?: number): Promise<SessionTurn[]> {
     try {
       const params = maxTurns ? { max_turns: maxTurns } : {};
-      const response = await this.client.get<any[]>(`/api/session/${sessionId}/history`, { params });
+      const response = await this.client.get<SessionTurn[]>(`/api/session/${sessionId}/history`, { params });
       return response.data;
     } catch (error) {
       throw this.handleError(error);
