@@ -143,6 +143,14 @@ export interface SessionResponse {
   message_count: number;
 }
 
+export interface SessionTurn {
+  query?: string;
+  response?: string;
+  timestamp?: string | number;
+  sources?: ChunkResponse[];
+  query_type?: string;
+}
+
 export interface HealthResponse {
   status: string;
   database_connected: boolean;
@@ -154,11 +162,12 @@ export interface StatsResponse {
   total_judgments: number;
   case_types: number;
   total_advocates: number;
-  total_laws: number;
+  total_laws_cited: number; // Primary field from API
+  total_laws?: number; // Optional fallback field
   case_type_breakdown: Array<{
     case_type: string;
     count: number;
-  }>;
+  }> | Array<[string, number]>; // Support both object and array tuple shapes
 }
 
 export interface ErrorResponse {
