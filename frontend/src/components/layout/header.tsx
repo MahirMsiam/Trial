@@ -1,8 +1,9 @@
 'use client';
 
+import { useTheme } from '@/components/theme-provider';
 import { Button } from '@/components/ui/button';
 import apiClient from '@/lib/api-client';
-import { Scale } from 'lucide-react';
+import { Moon, Scale, Sun } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
@@ -12,6 +13,7 @@ interface HeaderProps {
 
 export default function Header({ currentPage }: HeaderProps) {
   const [isHealthy, setIsHealthy] = useState<boolean | null>(null);
+  const { theme, setTheme } = useTheme();
 
   useEffect(() => {
     const checkHealth = async () => {
@@ -32,6 +34,10 @@ export default function Header({ currentPage }: HeaderProps) {
     const interval = setInterval(checkHealth, 60000); // Check every minute
     return () => clearInterval(interval);
   }, []);
+
+  const toggleTheme = () => {
+    setTheme(theme === 'dark' ? 'light' : 'dark');
+  };
 
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -60,6 +66,14 @@ export default function Header({ currentPage }: HeaderProps) {
               Chat
             </Button>
           </Link>
+          <Button variant="ghost" size="icon" onClick={toggleTheme}>
+            {theme === 'dark' ? (
+              <Sun className="h-5 w-5" />
+            ) : (
+              <Moon className="h-5 w-5" />
+            )}
+            <span className="sr-only">Toggle theme</span>
+          </Button>
         </nav>
       </div>
     </header>
