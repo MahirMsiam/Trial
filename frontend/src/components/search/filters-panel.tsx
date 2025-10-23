@@ -31,7 +31,17 @@ export default function FiltersPanel({
       try {
         const stats = await apiClient.getStats();
         if (stats.case_type_breakdown) {
-          const types = stats.case_type_breakdown.map((item) => item.case_type);
+          // Handle both object shape {case_type, count} and array shape [case_type, count]
+          const types = stats.case_type_breakdown
+            .map((item) => {
+              if (typeof item === 'object' && item !== null && 'case_type' in item) {
+                return item.case_type;
+              } else if (Array.isArray(item) && item.length > 0) {
+                return item[0];
+              }
+              return '';
+            })
+            .filter((type) => type && type.trim() !== '');
           setCaseTypes(types);
         }
       } catch (error) {
