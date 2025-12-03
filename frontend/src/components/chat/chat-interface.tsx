@@ -8,6 +8,7 @@ import { ChatFilters, ChunkResponse } from '@/types/api';
 import { Send, Settings, StopCircle, Trash2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import MessageBubble from './message-bubble';
+import SessionExpiryAlert from './session-expiry-alert';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -23,8 +24,11 @@ interface ChatInterfaceProps {
   isLoading: boolean;
   error: Error | null;
   currentStreamingMessage: string;
+  isSessionExpiring?: boolean;
   onSendMessage: (query: string, filters?: Record<string, any>, useStreaming?: boolean) => Promise<void>;
   onClearMessages: () => void;
+  onNewChat?: () => Promise<void>;
+  onRefreshSession?: () => Promise<void>;
   onStopStreaming: () => void;
   onSourceClick: (caseId: number) => void;
 }
@@ -36,19 +40,40 @@ export default function ChatInterface({
   isLoading,
   error,
   currentStreamingMessage,
+  isSessionExpiring = false,
   onSendMessage,
   onClearMessages,
+  onNewChat,
+  onRefreshSession,
   onStopStreaming,
   onSourceClick,
 }: ChatInterfaceProps) {
   const [input, setInput] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [chatFilters, setChatFilters] = useState<ChatFilters>({});
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Check if streaming is enabled via environment variable (defaults to true)
   const isStreamingEnabled = 
     process.env.NEXT_PUBLIC_ENABLE_STREAMING !== 'false';
+
+  const handleNewChat = async () => {
+    if (onNewChat) {
+      await onNewChat();
+    }
+  };
+
+  const handleRefreshSession = async () => {
+    setIsRefreshing(true);
+    try {
+      if (onRefreshSession) {
+        await onRefreshSession();
+      }
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -75,6 +100,11 @@ export default function ChatInterface({
 
   return (
     <Card className="flex flex-col h-full">
+      <SessionExpiryAlert
+        isExpiring={isSessionExpiring}
+        onRefresh={handleRefreshSession}
+        isRefreshing={isRefreshing}
+      />
       <CardHeader className="border-b">
         <div className="flex items-center justify-between">
           <CardTitle>Chat</CardTitle>
@@ -87,10 +117,17 @@ export default function ChatInterface({
               <Settings className="h-4 w-4 mr-2" />
               Filters
             </Button>
-            <Button variant="outline" size="sm" onClick={onClearMessages}>
-              <Trash2 className="h-4 w-4 mr-2" />
-              Clear
-            </Button>
+            {onNewChat ? (
+              <Button variant="outline" size="sm" onClick={handleNewChat}>
+                <Trash2 className="h-4 w-4 mr-2" />
+                New Chat
+              </Button>
+            ) : (
+              <Button variant="outline" size="sm" onClick={onClearMessages}>
+                <Trash2 className="h-4 w-4 mr-2" />
+                Clear
+              </Button>
+            )}
           </div>
         </div>
 
