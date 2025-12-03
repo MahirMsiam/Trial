@@ -148,6 +148,21 @@ class APIClient {
     }
   }
 
+  async getCrimeCategories(): Promise<string[]> {
+    try {
+      const response = await this.client.get<{ categories: string[] }>('/api/search/crime/categories');
+      return response.data.categories;
+    } catch (error: any) {
+      // If endpoint doesn't exist (404), silently fail for caller to use fallback
+      // Don't log warnings to avoid noise if endpoint is not available
+      if (error?.status_code === 404 || error?.response?.status === 404) {
+        throw error; // Let caller handle with fallback
+      }
+      // For other errors, re-throw
+      throw this.handleError(error);
+    }
+  }
+
   // Chat Methods
   async chat(request: ChatRequest): Promise<ChatResponse> {
     try {
@@ -215,7 +230,8 @@ class APIClient {
           
           if (line.startsWith('data: ')) {
             const data = line.slice(6);
-            accumulatedData += data;
+            // Append newline between accumulated data lines to safely parse multi-line JSON
+            accumulatedData += (accumulatedData ? '\n' : '') + data;
             // Don't parse yet - continue accumulating
             continue;
           }
