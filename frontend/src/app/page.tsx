@@ -8,13 +8,11 @@ import SearchBar from '@/components/search/search-bar';
 import SearchResults from '@/components/search/search-results';
 import { Button } from '@/components/ui/button';
 import { useSearch } from '@/hooks/use-search';
-import { useSession } from '@/hooks/use-session';
 import { CrimeCategory } from '@/types/crime';
 import { Filter } from 'lucide-react';
 import { useState } from 'react';
 
 export default function HomePage() {
-  const { sessionId } = useSession();
   const search = useSearch();
   const [selectedCaseId, setSelectedCaseId] = useState<number | null>(null);
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
@@ -41,6 +39,10 @@ export default function HomePage() {
           <div className="flex-1">
             <SearchBar
               onSearch={(query, mode) => {
+                // Save query to sessionStorage for use in highlighting results
+                if (typeof window !== 'undefined') {
+                  sessionStorage.setItem('lastSearchQuery', query);
+                }
                 // Prevent crime mode if disabled
                 const searchMode = (!crimeSearchEnabled && mode === 'crime') ? 'keyword' : mode;
                 search.executeSearch({ query, mode: searchMode, immediate: true });
@@ -97,7 +99,12 @@ export default function HomePage() {
           }}
           onClear={() => {
             search.clearFilters();
-            search.executeSearch({ filters: {}, immediate: true });
+            // If query is non-empty, re-run search with empty filters; otherwise clear results
+            if (search.query.trim()) {
+              search.executeSearch({ filters: {}, immediate: true });
+            } else {
+              search.clearResults();
+            }
           }}
           isOpen={isFiltersOpen}
           onClose={() => setIsFiltersOpen(false)}
