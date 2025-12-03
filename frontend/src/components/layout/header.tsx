@@ -66,6 +66,11 @@ export default function Header({ currentPage }: HeaderProps) {
               Chat
             </Button>
           </Link>
+          <Link href="/about">
+            <Button variant={currentPage === 'about' ? 'default' : 'ghost'}>
+              About
+            </Button>
+          </Link>
           <Button variant="ghost" size="icon" onClick={toggleTheme}>
             {theme === 'dark' ? (
               <Sun className="h-5 w-5" />
