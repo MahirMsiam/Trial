@@ -1,11 +1,22 @@
 import apiClient from '@/lib/api-client';
 import { getSessionId, removeSessionId, setSessionId as saveSessionId } from '@/lib/utils';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 export function useSession() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
+  const [isSessionExpiring, setIsSessionExpiring] = useState(false);
+  const refreshTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Get session timeout from environment (in seconds, default 30 minutes)
+  const sessionTimeout = parseInt(
+    process.env.NEXT_PUBLIC_SESSION_TIMEOUT || '1800',
+    10
+  );
+  
+  // Warning threshold: show warning 5 minutes before expiry
+  const warningThreshold = 300;
 
   // Initialize session on mount
   useEffect(() => {
@@ -19,6 +30,8 @@ export function useSession() {
             // Verify session still exists on backend
             await apiClient.getSession(existingSessionId);
             setSessionId(existingSessionId);
+            // Start refresh timer for this session
+            startSessionRefreshTimer(existingSessionId);
           } catch (err) {
             // Session expired or invalid, create new one
             console.log('Existing session invalid, creating new session');
@@ -32,6 +45,13 @@ export function useSession() {
     };
 
     initializeSession();
+
+    return () => {
+      // Cleanup timer on unmount
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+      }
+    };
   }, []);
 
   const createNewSession = useCallback(async () => {
@@ -48,6 +68,9 @@ export function useSession() {
         saveSessionId(newSessionId);
       }
       
+      // Start refresh timer for new session
+      startSessionRefreshTimer(newSessionId);
+      
       console.log('New session created:', newSessionId);
     } catch (err) {
       const error = err instanceof Error ? err : new Error('Failed to create session');
@@ -58,6 +81,24 @@ export function useSession() {
     }
   }, []);
 
+  const startSessionRefreshTimer = useCallback((sid: string) => {
+    // Clear existing timer
+    if (refreshTimerRef.current) {
+      clearTimeout(refreshTimerRef.current);
+    }
+
+    // Set timer to refresh before expiry, with warning threshold
+    const refreshTime = (sessionTimeout - warningThreshold) * 1000; // Refresh 5 min before expiry
+    
+    refreshTimerRef.current = setTimeout(() => {
+      setIsSessionExpiring(true);
+      console.warn('Session will expire in 5 minutes');
+      
+      // Auto-refresh session
+      refreshSession();
+    }, refreshTime);
+  }, [sessionTimeout]);
+
   const clearSession = useCallback(async () => {
     if (!sessionId) return;
 
@@ -65,6 +106,12 @@ export function useSession() {
       await apiClient.deleteSession(sessionId);
       setSessionId(null);
       removeSessionId();
+      setIsSessionExpiring(false);
+      
+      // Clear timer
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+      }
       
       // Create a new session immediately
       await createNewSession();
@@ -80,6 +127,11 @@ export function useSession() {
 
     try {
       await apiClient.getSession(sessionId);
+      setIsSessionExpiring(false);
+      
+      // Restart the refresh timer
+      startSessionRefreshTimer(sessionId);
+      
       console.log('Session refreshed:', sessionId);
     } catch (err) {
       const error = err instanceof Error ? err : new Error('Failed to refresh session');
@@ -89,12 +141,13 @@ export function useSession() {
       // If refresh fails, create new session
       await createNewSession();
     }
-  }, [sessionId, createNewSession]);
+  }, [sessionId, createNewSession, startSessionRefreshTimer]);
 
   return {
     sessionId,
     isLoading,
     error,
+    isSessionExpiring,
     createNewSession,
     clearSession,
     refreshSession,
