@@ -2,8 +2,11 @@
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { CRIME_CATEGORIES, CRIME_CATEGORY_LABELS, type CrimeCategory } from '@/types/crime';
+import apiClient from '@/lib/api-client';
+import { CRIME_CATEGORY_LABELS, type CrimeCategory } from '@/types/crime';
+import { useQuery } from '@tanstack/react-query';
 import * as LucideIcons from 'lucide-react';
+import { useMemo } from 'react';
 
 interface CrimeCategoriesProps {
   onCategorySelect: (category: CrimeCategory | null) => void;
@@ -11,6 +14,27 @@ interface CrimeCategoriesProps {
 }
 
 export default function CrimeCategories({ onCategorySelect, selectedCategory }: CrimeCategoriesProps) {
+  // Fetch crime categories from backend, with fallback to CRIME_CATEGORY_LABELS keys
+  const { data: categoriesData } = useQuery({
+    queryKey: ['crime-categories'],
+    queryFn: async () => {
+      try {
+        return await apiClient.getCrimeCategories();
+      } catch (error) {
+        // Silently fall back to local list (endpoint may not exist or be temporarily unavailable)
+        // Fallback to local list
+        return Object.keys(CRIME_CATEGORY_LABELS);
+      }
+    },
+    staleTime: 1000 * 60 * 60, // Cache for 1 hour
+  });
+
+  // Memoize fallback to avoid recreating on each render
+  const crimeCategories = useMemo(
+    () => (categoriesData || Object.keys(CRIME_CATEGORY_LABELS)) as CrimeCategory[],
+    [categoriesData]
+  );
+
   const getIcon = (iconName: string) => {
     const Icon = (LucideIcons as any)[iconName] || LucideIcons.AlertCircle;
     return <Icon className="h-4 w-4" />;
@@ -32,8 +56,11 @@ export default function CrimeCategories({ onCategorySelect, selectedCategory }: 
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-        {CRIME_CATEGORIES.map((category) => {
-          const { label, icon, color } = CRIME_CATEGORY_LABELS[category];
+        {crimeCategories.map((category) => {
+          const label = CRIME_CATEGORY_LABELS[category];
+          if (!label) return null; // Skip categories not in CRIME_CATEGORY_LABELS
+          
+          const { label: labelText, icon, color } = label;
           const isSelected = selectedCategory === category;
 
           return (
@@ -52,7 +79,7 @@ export default function CrimeCategories({ onCategorySelect, selectedCategory }: 
               <div className={`${color} p-2 rounded-full text-white`}>
                 {getIcon(icon)}
               </div>
-              <span className="text-xs font-medium text-center">{label}</span>
+              <span className="text-xs font-medium text-center">{labelText}</span>
             </button>
           );
         })}
@@ -61,9 +88,11 @@ export default function CrimeCategories({ onCategorySelect, selectedCategory }: 
       {selectedCategory && (
         <div className="flex items-center gap-2 p-3 bg-muted rounded-lg">
           <span className="text-sm font-medium">Selected:</span>
-          <Badge className={CRIME_CATEGORY_LABELS[selectedCategory].color}>
-            {CRIME_CATEGORY_LABELS[selectedCategory].label}
-          </Badge>
+          {CRIME_CATEGORY_LABELS[selectedCategory] && (
+            <Badge className={CRIME_CATEGORY_LABELS[selectedCategory].color}>
+              {CRIME_CATEGORY_LABELS[selectedCategory].label}
+            </Badge>
+          )}
         </div>
       )}
     </div>
