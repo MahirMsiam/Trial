@@ -8,9 +8,16 @@ import { useSession } from '@/hooks/use-session';
 import { useState } from 'react';
 
 export default function ChatPage() {
-  const { sessionId } = useSession();
+  const { sessionId, clearSession, refreshSession, isSessionExpiring } = useSession();
   const chat = useChat(sessionId);
   const [selectedCaseId, setSelectedCaseId] = useState<number | null>(null);
+
+  const handleNewChat = async () => {
+    // Clear the session on backend and create a new one
+    await clearSession();
+    // Clear local chat state
+    chat.clearMessages();
+  };
 
   return (
     <MainLayout currentPage="chat">
@@ -29,8 +36,11 @@ export default function ChatPage() {
           isLoading={chat.isLoading}
           error={chat.error}
           currentStreamingMessage={chat.currentStreamingMessage}
+          isSessionExpiring={isSessionExpiring}
           onSendMessage={chat.sendMessage}
           onClearMessages={chat.clearMessages}
+          onNewChat={handleNewChat}
+          onRefreshSession={refreshSession}
           onStopStreaming={chat.stopStreaming}
           onSourceClick={setSelectedCaseId}
         />
