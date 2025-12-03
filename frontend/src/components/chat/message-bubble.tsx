@@ -6,6 +6,8 @@ import { ChunkResponse } from '@/types/api';
 import { Check, Copy } from 'lucide-react';
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import rehypeSanitize from 'rehype-sanitize';
+import remarkGfm from 'remark-gfm';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -44,7 +46,12 @@ export default function MessageBubble({ message, isStreaming, onSourceClick }: M
     <div className="flex justify-start">
       <div className="max-w-[80%] rounded-lg bg-muted px-4 py-3 space-y-3">
         <div className="prose prose-sm max-w-none dark:prose-invert">
-          <ReactMarkdown>{message.content}</ReactMarkdown>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeSanitize]}
+          >
+            {message.content}
+          </ReactMarkdown>
         </div>
 
         {isStreaming && (
