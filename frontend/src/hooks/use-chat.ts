@@ -182,9 +182,18 @@ export function useChat(sessionId: string | null) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
+    // Preserve partial content by adding current streaming message to messages if non-empty
+    if (currentStreamingMessage.trim()) {
+      const assistantMessage: Message = {
+        role: 'assistant',
+        content: currentStreamingMessage,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, assistantMessage]);
+    }
     setIsStreaming(false);
     setCurrentStreamingMessage('');
-  }, []);
+  }, [currentStreamingMessage]);
 
   return {
     messages,
