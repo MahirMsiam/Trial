@@ -7,6 +7,8 @@ import { formatDate, getCaseTypeColor, getOutcomeColor } from '@/lib/utils';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import rehypeSanitize from 'rehype-sanitize';
+import remarkGfm from 'remark-gfm';
 
 interface CaseDetailsModalProps {
   caseId: number;
@@ -30,12 +32,12 @@ export default function CaseDetailsModal({ caseId, isOpen, onClose }: CaseDetail
 
         {isLoading && (
           <div className="flex items-center justify-center py-12">
-            <Loader2 className="h-8 w-8 animate-spin" />
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
           </div>
         )}
 
         {error && (
-          <div className="text-destructive">
+          <div className="rounded-lg bg-destructive/10 p-4 text-destructive border border-destructive/20">
             Error loading case details: {(error as Error).message}
           </div>
         )}
@@ -88,7 +90,12 @@ export default function CaseDetailsModal({ caseId, isOpen, onClose }: CaseDetail
               <div>
                 <h3 className="font-semibold mb-2">AI Summary</h3>
                 <div className="prose prose-sm max-w-none bg-muted p-4 rounded-lg dark:prose-invert">
-                  <ReactMarkdown>{data.summary}</ReactMarkdown>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    rehypePlugins={[rehypeSanitize]}
+                  >
+                    {data.summary}
+                  </ReactMarkdown>
                 </div>
               </div>
             )}
