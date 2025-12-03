@@ -26,9 +26,12 @@ export function useSearch() {
   const defaultTopK = parseInt(process.env.NEXT_PUBLIC_DEFAULT_TOP_K || '10', 10);
   const maxSearchResults = parseInt(process.env.NEXT_PUBLIC_MAX_SEARCH_RESULTS || '50', 10);
 
+  // Stable filters key: serialize to JSON to prevent cache churn from object reference changes
+  const filtersKey = JSON.stringify(filters);
+
   // Keyword search query
   const keywordSearchQuery = useQuery({
-    queryKey: ['search', 'keyword', query, filters],
+    queryKey: ['search', 'keyword', query, filtersKey],
     queryFn: async () => {
       const response = await apiClient.searchKeyword({ query, filters });
       // Limit results based on NEXT_PUBLIC_MAX_SEARCH_RESULTS
@@ -47,7 +50,7 @@ export function useSearch() {
 
   // Semantic search query
   const semanticSearchQuery = useQuery({
-    queryKey: ['search', 'semantic', query, filters, defaultTopK],
+    queryKey: ['search', 'semantic', query, filtersKey, defaultTopK],
     queryFn: async () => {
       const results = await apiClient.searchSemantic({ query, filters, top_k: defaultTopK });
       // Limit results based on NEXT_PUBLIC_MAX_SEARCH_RESULTS
@@ -59,7 +62,7 @@ export function useSearch() {
 
   // Hybrid search query
   const hybridSearchQuery = useQuery({
-    queryKey: ['search', 'hybrid', query, filters, defaultTopK],
+    queryKey: ['search', 'hybrid', query, filtersKey, defaultTopK],
     queryFn: async () => {
       const results = await apiClient.searchHybrid({ query, filters, top_k: defaultTopK });
       // Limit results based on NEXT_PUBLIC_MAX_SEARCH_RESULTS
@@ -150,7 +153,8 @@ export function useSearch() {
     const searchFilters = params?.filters ?? filters;
     const immediate = params?.immediate ?? false;
     
-    if (!searchQuery.trim()) return;
+    // Allow search if query is present OR filters exist (for filter-only search)
+    if (!searchQuery.trim() && Object.keys(searchFilters).length === 0) return;
     
     // Clear existing timer
     if (debounceTimerRef.current) {
@@ -188,11 +192,12 @@ export function useSearch() {
   // Clear results
   const clearResults = useCallback(() => {
     setShouldSearch(false);
-    queryClient.removeQueries({ queryKey: ['search', 'keyword', query, filters] });
-    queryClient.removeQueries({ queryKey: ['search', 'semantic', query, filters] });
-    queryClient.removeQueries({ queryKey: ['search', 'hybrid', query, filters] });
-    queryClient.removeQueries({ queryKey: ['search', 'crime', query] });
-  }, [queryClient, query, filters]);
+    // Use exact query keys with filtersKey to properly clear cache
+    queryClient.removeQueries({ queryKey: ['search', 'keyword', query, filtersKey] });
+    queryClient.removeQueries({ queryKey: ['search', 'semantic', query, filtersKey, defaultTopK] });
+    queryClient.removeQueries({ queryKey: ['search', 'hybrid', query, filtersKey, defaultTopK] });
+    queryClient.removeQueries({ queryKey: ['search', 'crime', query, maxSearchResults] });
+  }, [queryClient, query, filtersKey, defaultTopK, maxSearchResults]);
 
   // Clear filters
   const clearFilters = useCallback(() => {
