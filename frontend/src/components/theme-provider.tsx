@@ -1,61 +1,43 @@
 'use client';
 
-import { createContext, useContext, useEffect, useState } from 'react';
+import { ThemeProvider as NextThemesProvider, useTheme as useNextTheme } from 'next-themes';
+import { ReactNode } from 'react';
 
-type Theme = 'light' | 'dark' | 'system';
+type Theme = 'light' | 'dark';
 
-interface ThemeContextValue {
+export interface ThemeContextValue {
   theme: Theme;
   setTheme: (theme: Theme) => void;
 }
 
-const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
-
-export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setTheme] = useState<Theme>('system');
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-    const stored = localStorage.getItem('theme') as Theme | null;
-    if (stored) {
-      setTheme(stored);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!mounted) return;
-
-    const root = window.document.documentElement;
-    root.classList.remove('light', 'dark');
-
-    if (theme === 'system') {
-      const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches
-        ? 'dark'
-        : 'light';
-      root.classList.add(systemTheme);
-    } else {
-      root.classList.add(theme);
-    }
-
-    localStorage.setItem('theme', theme);
-  }, [theme, mounted]);
-
-  if (!mounted) {
-    return <>{children}</>;
-  }
-
+/**
+ * ThemeProvider component wrapping next-themes ThemeProvider
+ * Manages theme state ('light' | 'dark') persisted to localStorage
+ * and applies class to <html> element via attribute="class"
+ */
+export function ThemeProvider({ children }: { children: ReactNode }) {
   return (
-    <ThemeContext.Provider value={{ theme, setTheme }}>
+    <NextThemesProvider attribute="class" defaultTheme="light" enableSystem>
       {children}
-    </ThemeContext.Provider>
+    </NextThemesProvider>
   );
 }
 
-export function useTheme() {
-  const context = useContext(ThemeContext);
-  if (!context) {
-    throw new Error('useTheme must be used within ThemeProvider');
-  }
-  return context;
+/**
+ * useTheme hook - access theme and setTheme from next-themes
+ * Returns { theme, setTheme } where theme is 'light' | 'dark' (never undefined)
+ */
+export function useTheme(): ThemeContextValue {
+  const { theme, setTheme } = useNextTheme();
+  
+  // Normalize undefined/system theme to 'light'
+  const normalizedTheme = (theme === 'dark' ? 'dark' : 'light') as Theme;
+  
+  return {
+    theme: normalizedTheme,
+    setTheme: (newTheme: Theme) => {
+      setTheme(newTheme);
+    },
+  };
 }
+
